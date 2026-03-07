@@ -1,0 +1,904 @@
+# BlieverV1Pool — Developer Reference
+
+> **Audience:** Developers who want to integrate with, audit, debug, improve, or write tests for `BlieverV1Pool.sol`.
+
+---
+
+## Table of Contents
+
+1. [File & Dependency Map](#1-file--dependency-map)
+2. [Inheritance Chain](#2-inheritance-chain)
+3. [Storage Layout](#3-storage-layout)
+4. [Roles & Access Control](#4-roles--access-control)
+5. [Constants & Configuration](#5-constants--configuration)
+6. [Data Types](#6-data-types)
+7. [Errors](#7-errors)
+8. [Events](#8-events)
+9. [Function Reference](#9-function-reference)
+   - [Initializer](#initializer)
+   - [Market Management](#market-management)
+   - [Trade Flow](#trade-flow)
+   - [Settlement Flow](#settlement-flow)
+   - [Parameter Administration](#parameter-administration)
+   - [Pause Control](#pause-control)
+   - [View Functions](#view-functions)
+   - [ERC-4626 Overrides](#erc-4626-overrides)
+   - [ERC-20 Overrides](#erc-20-overrides)
+   - [UUPS Override](#uups-override)
+   - [Internal Helpers](#internal-helpers)
+10. [Upgrade Guide](#10-upgrade-guide)
+11. [Integration Patterns](#11-integration-patterns)
+12. [Invariants for Testing](#12-invariants-for-testing)
+13. [Potential Gotchas](#13-potential-gotchas)
+
+---
+
+## 1. File & Dependency Map
+
+```
+contracts/
+├── BlieverV1Pool.sol          ← this contract
+└── LSMath.sol                 ← pure LS-LMSR math library (used by market contracts)
+
+OpenZeppelin Upgradeable (^5.x):
+├── proxy/utils/Initializable.sol
+├── proxy/utils/UUPSUpgradeable.sol
+├── token/ERC20/ERC20Upgradeable.sol
+├── token/ERC20/extensions/ERC4626Upgradeable.sol
+├── token/ERC20/extensions/ERC20PermitUpgradeable.sol
+├── access/AccessControlUpgradeable.sol
+├── utils/PausableUpgradeable.sol
+└── utils/ReentrancyGuardUpgradeable.sol
+
+OpenZeppelin Standard:
+├── token/ERC20/IERC20.sol
+├── token/ERC20/utils/SafeERC20.sol
+└── utils/math/Math.sol
+```
+
+**Note:** `LSMath.sol` is used by market contracts to compute trade costs and liabilities. `BlieverV1Pool` receives the *results* of those calculations — it does not perform LS-LMSR math internally.
+
+---
+
+## 2. Inheritance Chain
+
+```
+BlieverV1Pool
+ ├─ Initializable
+ ├─ ERC4626Upgradeable          extends ERC20Upgradeable
+ │                                      └─ IERC4626, IERC20Metadata
+ ├─ ERC20PermitUpgradeable      extends ERC20Upgradeable + EIP712Upgradeable
+ ├─ PausableUpgradeable
+ ├─ AccessControlUpgradeable    implements IERC165
+ ├─ ReentrancyGuardUpgradeable
+ └─ UUPSUpgradeable
+```
+
+**C3 resolution rules for overridden functions:**
+
+| Function | Override Specification | Reason |
+|---|---|---|
+| `decimals()` | `override(ERC20Upgradeable, ERC4626Upgradeable)` | Both declare it; explicit 18 returned |
+| `_update()` | `override(ERC20Upgradeable)` + `whenNotPaused` | Adds pause check to all transfers |
+| `totalAssets()` | `override(ERC4626Upgradeable)` | Returns raw USDC balance as full LP NAV |
+| `maxWithdraw()` | `override(ERC4626Upgradeable)` | Adds liquidity lock + 20% reserve constraint |
+| `maxRedeem()` | `override(ERC4626Upgradeable)` | Adds liquidity lock + 20% reserve constraint |
+| `maxDeposit()` | `override(ERC4626Upgradeable)` | Returns 0 when paused |
+| `maxMint()` | `override(ERC4626Upgradeable)` | Returns 0 when paused |
+| `_decimalsOffset()` | `override(ERC4626Upgradeable)` | Returns 12 (bLP = 18 dec) |
+| `_authorizeUpgrade()` | `override(UUPSUpgradeable)` | Requires UPGRADER_ROLE |
+| `supportsInterface()` | `override(AccessControlUpgradeable)` | Merges ERC-165 support |
+
+---
+
+## 3. Storage Layout
+
+> ⚠️ **UPGRADE CRITICAL:** Never remove, rename, or reorder any storage variable. Upgrades must only append.
+
+### 3.1 Inherited Storage (handled by OZ namespaced storage in v5)
+
+OZ 5.x uses ERC-7201 namespaced storage for all inherited contracts, so inherited state does NOT occupy sequential slots in the implementation's storage. Each OZ module stores data in a deterministic keccak-derived slot. This prevents collisions between modules.
+
+### 3.2 Custom Storage (sequential, starts after proxy overhead)
+
+| Slot (approx.) | Variable | Type | Description |
+|---|---|---|---|
+| 0 | `alpha` | `uint256` | LS-LMSR α parameter (18-dec) |
+| 1 | `maxRiskPerMarket` | `uint256` | Max USDC loss per market (6-dec) |
+| 2 | `reserveBps` | `uint16` | Reserve buffer BPS — packed in 32-byte slot (2 of 32 bytes) |
+| 3 | `totalLiability` | `uint256` | Live sum of all active currentLiability values |
+| 4 | `activeMarketCount` | `uint256` | Non-settled market count |
+| 5 | `markets` | `mapping(address=>MarketInfo)` | Per-market accounting (pointer) |
+| 6–50 | `__gap` | `uint256[45]` | Future variable reserve |
+
+### 3.3 MarketInfo Struct Storage (per mapping entry)
+
+Each `markets[addr]` occupies 5 storage slots:
+
+| Struct Slot | Field(s) | Packed Bytes |
+|---|---|---|
+| 0 | `registered` (bool,1) + `settled` (bool,1) + `hasTrades` (bool,1) | 3/32 bytes (29 free) |
+| 1 | `riskBudget` | 32 bytes |
+| 2 | `currentLiability` | 32 bytes |
+| 3 | `settledPayout` | 32 bytes |
+| 4 | `claimedPayout` | 32 bytes |
+
+---
+
+## 4. Roles & Access Control
+
+```solidity
+bytes32 DEFAULT_ADMIN_ROLE     = 0x00 (OZ default)
+bytes32 MARKET_MANAGER_ROLE    = keccak256("MARKET_MANAGER_ROLE")
+bytes32 MARKET_ROLE            = keccak256("MARKET_ROLE")
+bytes32 PAUSER_ROLE            = keccak256("PAUSER_ROLE")
+bytes32 UPGRADER_ROLE          = keccak256("UPGRADER_ROLE")
+```
+
+**Who holds what after `initialize`:**
+
+| Role | Initial Holder | Purpose |
+|---|---|---|
+| DEFAULT_ADMIN_ROLE | `admin` param | Grant/revoke any role; collect fees; set params; force-settle |
+| MARKET_MANAGER_ROLE | `admin` param | Register/deregister markets |
+| PAUSER_ROLE | `admin` param | Pause/unpause vault |
+| UPGRADER_ROLE | `admin` param | Authorize UUPS upgrades |
+| MARKET_ROLE | *auto-granted per market* | Call collectTradeCost/settleMarket/claimWinnings |
+
+**Function → Role requirement:**
+
+| Function | Required Role |
+|---|---|
+| `registerMarket` | MARKET_MANAGER_ROLE |
+| `deregisterMarket` | MARKET_MANAGER_ROLE |
+| `collectTradeCost` | MARKET_ROLE (msg.sender = market contract) |
+| `settleMarket` | MARKET_ROLE (msg.sender = market contract) |
+| `forceSettleMarket` | DEFAULT_ADMIN_ROLE |
+| `claimWinnings` | MARKET_ROLE (msg.sender = market contract) |
+| `setAlpha` | DEFAULT_ADMIN_ROLE |
+| `setMaxRiskPerMarket` | DEFAULT_ADMIN_ROLE |
+| `setMaxAllocationBps` | DEFAULT_ADMIN_ROLE |
+| `pause` / `unpause` | PAUSER_ROLE |
+| `_authorizeUpgrade` | UPGRADER_ROLE |
+
+---
+
+## 5. Constants & Configuration
+
+| Constant | Value | Description |
+|---|---|---|
+| `BPS_BASE` | `10_000` | 100% denominator for basis points |
+| `MIN_RESERVE_BPS` | `500` | 5% absolute floor on `reserveBps` — never lower |
+| `MAX_RESERVE_BPS` | `5_000` | 50% absolute ceiling on `reserveBps` — conservative mode cap |
+| `MAX_ACTIVE_MARKETS` | `10_000` | Max simultaneously active markets |
+| `MIN_ALPHA` | `1e12` | Minimum valid α (prevents LS-LMSR division by zero) |
+| `MAX_ALPHA` | `2e17` | Maximum valid α (20% spread ceiling) |
+| `DECIMALS_OFFSET` | `12` | bLP(18) − USDC(6) = 12 decimal offset |
+
+**Recommended deployment parameters:**
+
+| Parameter | Suggested Value | Notes |
+|---|---|---|
+| `alpha` | `3e16` (3%) | Moderate spread, typical prediction market |
+| `maxRiskPerMarket` | `1e6` ($1 USDC) | Low risk budget for scalable 10K markets |
+| `reserveBps` | `2000` (20%) | 80% active capital, 20% reserve buffer |
+
+---
+
+## 6. Data Types
+
+### `MarketInfo`
+
+```solidity
+struct MarketInfo {
+    bool     registered;      // Is the market active in the vault?
+    bool     settled;         // Has settleMarket() been called?
+    bool     hasTrades;       // Has collectTradeCost() been called at least once?
+    uint256  riskBudget;      // = maxRiskPerMarket at registration (≡ C(q⁰) = R)
+    uint256  currentLiability;// Live worst-case loss = LSMath.calculateWorstCaseLoss(...)
+    uint256  settledPayout;   // Total USDC authorized for winners (set by settleMarket)
+    uint256  claimedPayout;   // USDC already paid to winners (cumulative)
+}
+```
+
+**State machine:**
+
+```
+registered=F settled=F  →  (does not exist)
+registered=T settled=F  →  ACTIVE (hasTrades=F: no trades yet; hasTrades=T: trading)
+registered=T settled=T  →  SETTLED (payout may be partially or fully claimed)
+```
+
+---
+
+## 7. Errors
+
+| Error | Signature | When Thrown |
+|---|---|---|
+| `ZeroAddress` | `ZeroAddress()` | address param is address(0) |
+| `ZeroAmount` | `ZeroAmount()` | amount param is 0 where prohibited |
+| `InvalidAlpha` | `InvalidAlpha(uint256 value)` | α not in [MIN_ALPHA, MAX_ALPHA] |
+| `InvalidMaxRisk` | `InvalidMaxRisk(uint256 value)` | maxRiskPerMarket = 0 |
+| `InvalidBps` | `InvalidBps(uint16 bps)` | BPS param out of range |
+| `InvalidOutcomeCount` | `InvalidOutcomeCount(uint32 count)` | nOutcomes not in [2,100] |
+| `MarketAlreadyRegistered` | `MarketAlreadyRegistered(address market)` | registerMarket called twice |
+| `MarketNotRegistered` | `MarketNotRegistered(address market)` | market not in registry |
+| `MarketAlreadySettled` | `MarketAlreadySettled(address market)` | settleMarket called twice |
+| `MarketNotSettled` | `MarketNotSettled(address market)` | claimWinnings before settleMarket |
+| `MarketHasTrades` | `MarketHasTrades(address market)` | deregisterMarket after trades |
+| `CapacityExceeded` | `CapacityExceeded(uint256 projected, uint256 activeCap)` | `newTotalLiab > assets × (100% − reserveBps)` |
+| `NotAContract` | `NotAContract(address account)` | market address has no deployed code (EOA) |
+| `PayoutExceedsRiskBudget` | `PayoutExceedsRiskBudget(uint256 payout, uint256 budget)` | settleMarket payout > R |
+| `PayoutExceedsSettlement` | `PayoutExceedsSettlement(uint256 requested, uint256 remaining)` | winners claim more than authorized |
+| `ExceedsMaxMarkets` | `ExceedsMaxMarkets(uint256 active)` | > 10 000 active markets |
+| `VaultInsolvent` | `VaultInsolvent(uint256 balance, uint256 liability)` | raw balance < totalLiability (accounting bug) |
+
+---
+
+## 8. Events
+
+### `MarketRegistered`
+```solidity
+event MarketRegistered(address indexed market, uint32 outcomeCount, uint256 riskBudget);
+```
+Emitted by `registerMarket`. Index by `market` to track per-market state off-chain.
+
+### `MarketDeregistered`
+```solidity
+event MarketDeregistered(address indexed market);
+```
+Emitted by `deregisterMarket`.
+
+### `MarketSettled`
+```solidity
+event MarketSettled(address indexed market, uint256 totalPayout, uint256 profit);
+```
+- `totalPayout` = USDC owed to winners
+- `profit` = `riskBudget − totalPayout` (vault spread earned; ≥ 0 always)
+
+### `TradeCostCollected`
+```solidity
+event TradeCostCollected(address indexed market, address indexed trader, uint256 cost, uint256 newCurrentLiability);
+```
+Emitted every trade. `newCurrentLiability` is the updated worst-case loss for that market.
+
+### `MarketLiabilityUpdated`
+```solidity
+event MarketLiabilityUpdated(address indexed market, uint256 oldLiability, uint256 newLiability);
+```
+Emitted from `collectTradeCost` when the market's `currentLiability` changes. Off-chain indexers should listen to this to track `totalLiability` decomposed per market.
+
+### `MarketForceSettled`
+```solidity
+event MarketForceSettled(address indexed market, uint256 lossAbsorbed);
+```
+- `lossAbsorbed` = the `currentLiability` released from `totalLiability` (absorbed as permanent LP NAV loss).
+
+### `WinningsClaimed`
+```solidity
+event WinningsClaimed(address indexed market, address indexed winner, uint256 amount);
+```
+Emitted each time a winner receives USDC.
+
+### Parameter update events
+```solidity
+event AlphaUpdated(uint256 oldAlpha, uint256 newAlpha);
+event MaxRiskUpdated(uint256 oldMax, uint256 newMax);
+event ReserveBpsUpdated(uint16 oldBps, uint16 newBps);
+```
+
+---
+
+## 9. Function Reference
+
+### Initializer
+
+#### `initialize`
+```solidity
+function initialize(
+    address usdc,
+    address admin,
+    uint256 _alpha,
+    uint256 _maxRiskPerMarket,
+    uint16  _reserveBps
+) external initializer
+```
+
+**Modifiers:** `initializer` (Initializable — can only be called once, on the proxy)
+
+**Validation:**
+- `usdc != address(0)` and `admin != address(0)`
+- `_alpha in [1e12, 2e17]`
+- `_maxRiskPerMarket > 0`
+- `_reserveBps in [MIN_RESERVE_BPS=500, MAX_RESERVE_BPS=5000]`
+
+**Init chain called (must all be called):**
+```
+__ERC20_init("Believer LP", "bLP")
+__ERC4626_init(IERC20(usdc))
+__ERC20Permit_init("Believer LP")
+__Pausable_init()
+__AccessControl_init()
+__ReentrancyGuard_init()
+__UUPSUpgradeable_init()
+```
+
+**Side effects:** Grants all four privileged roles to `admin`.
+
+---
+
+### Market Management
+
+#### `registerMarket`
+```solidity
+function registerMarket(address market, uint32 nOutcomes)
+    external onlyRole(MARKET_MANAGER_ROLE) whenNotPaused
+```
+
+**Pre-conditions:**
+1. `market != address(0)`
+2. `market.code.length > 0` (must be a deployed contract, not an EOA)
+3. `nOutcomes in [2, 100]`
+4. `markets[market].registered == false`
+5. `activeMarketCount < MAX_ACTIVE_MARKETS`
+6. Capacity: `totalLiability + R ≤ totalAssets() × (BPS_BASE − reserveBps) / BPS_BASE`
+
+**State changes:**
+```
+markets[market] = MarketInfo{ registered:true, hasTrades:false, ... riskBudget: maxRiskPerMarket, currentLiability: maxRiskPerMarket }
+totalLiability += maxRiskPerMarket
+activeMarketCount += 1
+MARKET_ROLE granted to market
+```
+
+**Why `currentLiability = riskBudget` at start:** By LS-LMSR theory, C(q⁰) = R exactly (from the epsilon derivation). The vault is exposed to the full R from block 0.
+
+---
+
+#### `deregisterMarket`
+```solidity
+function deregisterMarket(address market)
+    external onlyRole(MARKET_MANAGER_ROLE) whenNotPaused
+```
+
+**Pre-conditions:**
+1. `markets[market].registered == true`
+2. `markets[market].settled == false`
+3. `markets[market].hasTrades == false` ← prevents stranding trader USDC
+
+**State changes:**
+```
+totalLiability -= info.riskBudget
+--activeMarketCount  (reverts on underflow — surfaces accounting bugs)
+delete markets[market]
+MARKET_ROLE revoked from market
+```
+
+---
+
+### Trade Flow
+
+#### `collectTradeCost`
+```solidity
+function collectTradeCost(address trader, uint256 cost, uint256 newLiability)
+    external onlyRole(MARKET_ROLE) nonReentrant whenNotPaused
+```
+
+**msg.sender is the market contract** (has MARKET_ROLE).
+
+**Pre-conditions:**
+1. `markets[msg.sender].registered == true`
+2. `markets[msg.sender].settled == false`
+3. `trader != address(0)`
+
+**State changes (before external call — CEI):**
+```
+capped = min(newLiability, info.riskBudget)
+old    = info.currentLiability
+
+// Delta-update totalLiability (live LS-LMSR tracking)
+if capped > old:   totalLiability += (capped - old)
+elif capped < old: totalLiability -= (old - capped)
+
+info.currentLiability = capped
+info.hasTrades = true
+```
+
+**`totalLiability` delta logic:** When `newLiability < old` (normal as volume grows), `totalLiability` shrinks → LP NAV rises immediately on each trade. When a market is one-sided early, `newLiability` may momentarily exceed `old` → `totalLiability` rises temporarily.
+
+**External call (after state changes):**
+```
+IERC20(asset()).safeTransferFrom(trader, address(this), cost)
+```
+
+**Gas note:** If `cost == 0`, the USDC transfer is skipped. This handles zero-cost trades (e.g. marginal rebalances that round to zero).
+
+**Re-entrancy analysis:** All state changes (including `totalLiability` update) happen BEFORE `safeTransferFrom`. Even with ERC-777 hooks, vault state is committed. `nonReentrant` adds a second layer.
+
+---
+
+### Settlement Flow
+
+#### `settleMarket`
+```solidity
+function settleMarket(uint256 totalPayout)
+    external onlyRole(MARKET_ROLE) nonReentrant
+```
+
+**Not pause-gated** — markets must always be resolvable.
+
+**msg.sender is the market contract.**
+
+**Pre-conditions:**
+1. `markets[msg.sender].registered == true`
+2. `markets[msg.sender].settled == false`
+3. `totalPayout ≤ info.riskBudget` — enforced by `PayoutExceedsRiskBudget`
+
+**State changes:**
+```
+info.settled = true
+info.settledPayout = totalPayout
+info.currentLiability = 0
+totalLiability -= info.currentLiability  ← live value, not riskBudget
+--activeMarketCount  (reverts on underflow — surfaces accounting bugs)
+_assertSolvent() called ← accounting invariant check
+```
+
+**No USDC moves here** — only accounting. USDC moves in `claimWinnings`.
+
+**`profit` in emitted event:** `riskBudget - totalPayout`. The difference between worst-case reserved and what was actually owed. Stays in vault and increases LP NAV.
+
+**`_assertSolvent` note:** Should never revert. If it does, an upstream accounting path has corrupted state. This is an auditing / testing aid, not a runtime guard.
+
+---
+
+#### `forceSettleMarket`
+```solidity
+function forceSettleMarket(address market)
+    external onlyRole(DEFAULT_ADMIN_ROLE) nonReentrant
+```
+
+**Emergency path only.** Use when a market's oracle has permanently failed or the market contract is broken and cannot call `settleMarket` itself.
+
+**Not pause-gated** — emergencies must be handleable at any time.
+
+**Pre-conditions:**
+1. `markets[market].registered == true`
+2. `markets[market].settled == false`
+
+**State changes:**
+```
+totalLiability -= info.currentLiability  ← absorbed as worst-case LP loss
+--activeMarketCount  (reverts on underflow — surfaces accounting bugs)
+info.settled = true
+info.settledPayout = 0          ← no winners paid
+info.currentLiability = 0
+info.riskBudget = 0
+MARKET_ROLE revoked from market
+```
+
+**Economic effect:** LP NAV decreases by `lossAbsorbed = info.currentLiability`. This is the cost of unresolvable market risk. Call only when the market is genuinely broken — there is no undo.
+
+**After forceSettleMarket:** The market record remains in `markets` mapping as `settled=true` with zero payouts. `claimWinnings` will revert (`MarketNotSettled` check passes but `settledPayout=0` makes all claims `PayoutExceedsSettlement`).
+
+---
+```solidity
+function claimWinnings(address winner, uint256 amount)
+    external onlyRole(MARKET_ROLE) nonReentrant whenNotPaused
+```
+
+**msg.sender is the settled market contract.**
+
+**Pre-conditions:**
+1. `markets[msg.sender].registered == true`
+2. `markets[msg.sender].settled == true`
+3. `winner != address(0)`, `amount > 0`
+4. `amount ≤ info.settledPayout - info.claimedPayout`
+
+**State changes (before USDC transfer — CEI):**
+```
+info.claimedPayout += amount
+```
+
+**External call:**
+```
+IERC20(asset()).safeTransfer(winner, amount)
+```
+
+**Pull-payment pattern:** Market orchestrates, vault pays. Winners call `market.claim()` → market verifies share balance → market calls `vault.claimWinnings(winner, amount)`.
+
+---
+
+### Parameter Administration
+
+#### `setAlpha(uint256 newAlpha)`
+- Range: `[MIN_ALPHA=1e12, MAX_ALPHA=2e17]`
+- Affects: markets registered **after** this call only.
+- Emits: `AlphaUpdated(old, new)`
+
+#### `setMaxRiskPerMarket(uint256 newMax)`
+- Must be > 0.
+- Affects: markets registered **after** this call only.
+- Emits: `MaxRiskUpdated(old, new)`
+
+#### `setReserveBps(uint16 newBps)`
+- Range: `[MIN_RESERVE_BPS=500, MAX_RESERVE_BPS=5000]`
+- Controls both the registration capacity ceiling and the LP withdrawal floor simultaneously.
+- Lower value → more active capital, more markets permitted, less LP withdrawal headroom.
+- Higher value → tighter market capacity, more LP withdrawal headroom.
+- Emits: `ReserveBpsUpdated(old, new)`
+
+---
+
+### Pause Control
+
+#### `pause()` / `unpause()`
+- Caller: `PAUSER_ROLE`
+- `_update` hook: reverts on ANY token transfer while paused (deposit, withdraw, burn, transfer).
+- `collectTradeCost` and `claimWinnings`: gated by `whenNotPaused`.
+- `settleMarket`: NOT paused — markets must always resolve.
+
+---
+
+### View Functions
+
+#### `availableLiquidity() → uint256`
+Returns `_freeLiquidity()`. This is the maximum USDC LPs can collectively withdraw right now: `assets − totalLiability − (assets × reserveBps)`. Both the liability lock and the reserve buffer are anchored to total assets. Because `totalLiability` is live, this value rises organically as markets earn spread.
+
+#### `nav() → uint256`
+Returns `totalAssets() − totalLiability`. The net USDC owned by LPs after subtracting all active market loss exposure. Rising NAV signals the vault is accumulating spread from trading activity.
+
+#### `utilizationBps() → uint256`
+Returns `totalLiability × 10_000 / totalAssets()`.
+- 0 = no active markets
+- 5000 = 50% of LP assets encumbered by live market liabilities
+- 10000 = fully encumbered (no LP withdrawal possible)
+- >10000 = undercollateralised (cannot occur through normal paths)
+
+Because `totalLiability` tracks live worst-case loss (not fixed riskBudgets), utilisation naturally falls as markets accumulate trading volume.
+
+#### `isSolvent() → bool`
+Returns `balanceOf(vault) >= totalLiability`. Off-chain monitors should poll this; it should always be `true`. Equivalent to the `_assertSolvent` internal check without reverting.
+
+#### `getMarketInfo(address market) → MarketInfo`
+Returns full struct. All fields zero-valued for unregistered addresses.
+
+#### `isActiveMarket(address market) → bool`
+Returns `true` if `registered && !settled`.
+
+---
+
+### ERC-4626 Overrides
+
+#### `totalAssets() → uint256`
+```solidity
+return IERC20(asset()).balanceOf(address(this));
+```
+**Why not subtract `totalLiability`?** The USDC backing market liabilities is still LP-owned capital — it just cannot be withdrawn yet. Excluding it from `totalAssets` would incorrectly depress the LP share price.
+
+#### `maxWithdraw(address owner) → uint256`
+```solidity
+if (paused()) return 0;
+return min(
+    _convertToAssets(balanceOf(owner), Math.Rounding.Floor),
+    _freeLiquidity()
+)
+```
+If the vault is fully utilised, this returns 0 for all LPs — they must wait for markets to settle.
+
+#### `maxRedeem(address owner) → uint256`
+```solidity
+if (paused()) return 0;
+return min(
+    balanceOf(owner),
+    _convertToShares(_freeLiquidity(), Math.Rounding.Floor)
+)
+```
+
+#### `maxDeposit / maxMint`
+Both return `type(uint256).max` normally, `0` while paused.
+
+---
+
+### ERC-20 Overrides
+
+#### `decimals() → uint8`
+Always returns `18`. Explicitly overrides both `ERC20Upgradeable` and `ERC4626Upgradeable` to avoid ambiguity.
+
+#### `_update(from, to, value)`
+```solidity
+function _update(...) internal override(ERC20Upgradeable) whenNotPaused {
+    super._update(from, to, value);
+}
+```
+The `whenNotPaused` modifier blocks all ERC-20 movements (transfers, mints, burns) during pause. This is more efficient than overriding each individual function.
+
+---
+
+### UUPS Override
+
+#### `_authorizeUpgrade(address newImplementation)`
+```solidity
+function _authorizeUpgrade(address) internal override onlyRole(UPGRADER_ROLE) {}
+```
+Empty body — the `onlyRole` modifier performs the check. Called automatically by `UUPSUpgradeable.upgradeToAndCall`.
+
+---
+
+### Internal Helpers
+
+#### `_decimalsOffset() → uint8`
+Returns `12`. Called by ERC-4626's `decimals()` computation:
+```
+bLP decimals = USDC.decimals() + _decimalsOffset() = 6 + 12 = 18
+```
+Also sets the virtual-share count to `10^12` for the inflation-attack protection formula in ERC-4626.
+
+#### `_freeLiquidity() → uint256`
+```solidity
+uint256 assets  = totalAssets();
+uint256 reserve = assets.mulDiv(reserveBps, BPS_BASE, Math.Rounding.Ceil);
+uint256 minHeld = totalLiability + reserve;
+return assets > minHeld ? assets - minHeld : 0;
+```
+Applies two constraints anchored to total assets: (1) cannot withdraw below `totalLiability`, (2) `reserveBps` fraction of total assets is always held back as a withdrawal buffer. The reserve is **not** relative to NAV — it is a fixed slice of total assets, making it a real, non-self-referential floor. Used by `maxWithdraw`, `maxRedeem`, `availableLiquidity`.
+
+Because `totalLiability` is live, `_freeLiquidity` rises naturally after every trade that reduces a market's worst-case loss bound.
+
+#### `_assertSolvent()`
+```solidity
+uint256 rawBalance = IERC20(asset()).balanceOf(address(this));
+if (rawBalance < totalLiability) revert VaultInsolvent(rawBalance, totalLiability);
+```
+Called at the end of `settleMarket`. Should never revert through normal operation — it is an on-chain accounting assertion, not a runtime guard. If it reverts, a code path has incorrectly updated `totalLiability`.
+
+---
+
+## 10. Upgrade Guide
+
+### Upgrade Checklist
+
+- [ ] New implementation compiled with same `pragma solidity 0.8.31`
+- [ ] No existing storage variables renamed, reordered, or removed
+- [ ] New variables appended BEFORE `__gap` and `__gap` size reduced accordingly
+- [ ] `_disableInitializers()` present in new implementation constructor
+- [ ] If new initializer needed: use `reinitializer(N)` with incremented version
+- [ ] All inherited `__init()` functions still called (add new ones for new OZ modules)
+- [ ] `_authorizeUpgrade` still protected by `UPGRADER_ROLE`
+- [ ] Tested with `forge test` + `foundry upgrade` fork simulation
+
+### Storage Gap Accounting
+
+Current custom state: 6 variables → `__gap[45]` (conservative; total effectively reserved ≈ 51).
+
+When adding variables in future upgrades:
+
+```solidity
+// BEFORE (current):
+uint256[45] private __gap;
+
+// AFTER (adding 2 new variables):
+uint256 public newVariableA;   // slot 6
+uint256 public newVariableB;   // slot 7
+uint256[43] private __gap;     // reduced from 45 to 43
+```
+
+---
+
+## 11. Integration Patterns
+
+### Market Contract Integration (most important)
+
+```solidity
+interface IBlieverV1Pool {
+    function collectTradeCost(address trader, uint256 cost, uint256 newLiability) external;
+    function settleMarket(uint256 totalPayout) external;
+    function claimWinnings(address winner, uint256 amount) external;
+    function alpha() external view returns (uint256);
+    function maxRiskPerMarket() external view returns (uint256);
+    function reserveBps() external view returns (uint16);
+}
+
+contract MyMarket {
+    IBlieverV1Pool public immutable vault;
+    IERC20         public immutable usdc;
+
+    // Market must have MARKET_ROLE granted by vault admin
+    // (done automatically by vault.registerMarket)
+
+    function buy(uint256 outcomeIdx, uint256 deltaQ) external {
+        // 1. Compute cost via LSMath
+        uint256 cost = LSMath.costFunction(q_new, alpha) 
+                     - LSMath.costFunction(q_old, alpha);
+        uint256 newLiab = LSMath.calculateWorstCaseLoss(q_new, q0, alpha);
+
+        // 2. Update local q-vector (Effects first)
+        q[outcomeIdx] += deltaQ;
+
+        // 3. Pull cost AND update live liability atomically
+        //    (trader must have approved vault: usdc.approve(address(vault), cost))
+        vault.collectTradeCost(msg.sender, cost, newLiab);
+        // totalLiability in the vault is now updated to reflect newLiab
+    }
+
+    function resolve(uint256 winningOutcome) external onlyOracle {
+        // Convert q[winningOutcome] from LSMath 18-dec to 6-dec USDC before calling
+        uint256 totalPayout = q[winningOutcome] / 1e12;
+        vault.settleMarket(totalPayout);
+    }
+
+    function claim() external {
+        uint256 payout = shares[msg.sender][winningOutcome];
+        shares[msg.sender][winningOutcome] = 0;
+        vault.claimWinnings(msg.sender, payout);
+    }
+}
+```
+
+### LP Deposit (Standard ERC-4626)
+
+```solidity
+// 1. Approve vault
+IERC20(usdc).approve(address(vault), amount);
+
+// 2. Deposit and receive bLP
+uint256 shares = vault.deposit(amount, lpAddress);
+
+// 3. Check LP position and available liquidity
+uint256 usdcValue    = vault.convertToAssets(vault.balanceOf(lpAddress));
+uint256 withdrawable = vault.maxWithdraw(lpAddress);
+uint256 currentNAV   = vault.nav();
+```
+
+### LP Withdrawal (respects live liability lock + 20% reserve)
+
+```solidity
+// Check max withdrawable (accounts for live liability AND 20% reserve floor)
+uint256 withdrawable = vault.maxWithdraw(lpAddress);
+
+// Withdraw (reverts if exceeds maxWithdraw)
+vault.withdraw(withdrawable, lpAddress, lpAddress);
+```
+
+### Off-Chain Monitoring
+
+```solidity
+// Poll these to monitor vault health
+bool   ok          = vault.isSolvent();        // must always be true
+uint256 utilBps    = vault.utilizationBps();   // rising = more markets active
+uint256 freeLiq    = vault.availableLiquidity(); // rising = vault earning spread
+uint256 netNAV     = vault.nav();              // LP net value
+```
+
+---
+
+## 12. Invariants for Testing
+
+The following invariants must hold at **all times**. Use Foundry invariant testing to verify:
+
+```solidity
+// Invariant 1: Vault USDC ≥ totalLiability
+function invariant_solvency() external {
+    uint256 balance = IERC20(vault.asset()).balanceOf(address(vault));
+    assertGe(balance, vault.totalLiability());
+}
+
+// Invariant 2: totalAssets = raw USDC balance
+function invariant_totalAssets() external {
+    uint256 balance = IERC20(vault.asset()).balanceOf(address(vault));
+    assertEq(vault.totalAssets(), balance);
+}
+
+// Invariant 3: totalLiability = Σ currentLiability over all active markets (live tracking)
+// Market addresses are tracked off-chain or via the test harness; there is no on-chain list.
+function invariant_liabilityAccounting(address[] calldata knownMarkets) external {
+    uint256 sum = 0;
+    for (uint i = 0; i < knownMarkets.length; i++) {
+        BlieverV1Pool.MarketInfo memory info = vault.getMarketInfo(knownMarkets[i]);
+        if (info.registered && !info.settled) {
+            sum += info.currentLiability;  // live value, not riskBudget
+        }
+    }
+    assertEq(vault.totalLiability(), sum);
+}
+
+// Invariant 4: No market payout exceeds its riskBudget; no double-claim
+function invariant_noExcessPayout(address[] calldata knownMarkets) external {
+    for (uint i = 0; i < knownMarkets.length; i++) {
+        BlieverV1Pool.MarketInfo memory info = vault.getMarketInfo(knownMarkets[i]);
+        if (info.settled) {
+            assertLe(info.settledPayout, info.riskBudget);
+            assertLe(info.claimedPayout, info.settledPayout);
+        }
+    }
+}
+
+// Invariant 5: activeMarketCount == count of registered+unsettled markets
+function invariant_activeMarketCount(address[] calldata knownMarkets) external {
+    uint256 count = 0;
+    for (uint i = 0; i < knownMarkets.length; i++) {
+        if (vault.isActiveMarket(knownMarkets[i])) count++;
+    }
+    assertEq(vault.activeMarketCount(), count);
+}
+
+// Invariant 6: LP maxWithdraw ≤ availableLiquidity (≤ NAV × 80%)
+function invariant_maxWithdrawBound(address lp) external {
+    assertLe(vault.maxWithdraw(lp), vault.availableLiquidity());
+}
+
+// Invariant 7: bLP totalSupply corresponds to totalAssets (via ERC-4626 exchange rate)
+function invariant_exchangeRate() external {
+    if (vault.totalSupply() > 0) {
+        assertGe(vault.convertToAssets(10**vault.decimals()), 1);
+    }
+}
+
+// Invariant 8: currentLiability ≤ riskBudget for every active market
+function invariant_liabilityBound(address[] calldata knownMarkets) external {
+    for (uint i = 0; i < knownMarkets.length; i++) {
+        BlieverV1Pool.MarketInfo memory info = vault.getMarketInfo(knownMarkets[i]);
+        if (info.registered && !info.settled) {
+            assertLe(info.currentLiability, info.riskBudget);
+        }
+    }
+}
+
+// Invariant 9: isSolvent() == true (live view mirror of _assertSolvent)
+function invariant_isSolvent() external {
+    assertTrue(vault.isSolvent());
+}
+```
+
+---
+
+## 13. Potential Gotchas
+
+### 1. Trader must approve the VAULT, not the market
+
+```
+✗ WRONG:   usdc.approve(marketContract, cost)
+✓ CORRECT: usdc.approve(address(vault), cost)
+```
+
+The vault calls `safeTransferFrom(trader, vault, cost)` — the trader's approval must be for the vault.
+
+### 2. `collectTradeCost` updates `totalLiability` live — no separate call needed
+
+`collectTradeCost` performs a delta update to `totalLiability` atomically on every trade. Market contracts must not make any separate liability-update call; the liability is committed inside `collectTradeCost` before the USDC transfer.
+
+### 3. `settleMarket` releases `currentLiability`, not `riskBudget`
+
+The accounting on settlement uses the **live** `currentLiability`, not the original `riskBudget`. If a market has accumulated significant trading volume before settlement, `currentLiability < riskBudget`, and `totalLiability` decreases only by the live amount. The difference (`riskBudget - currentLiability`) represents spread the vault has already effectively earned throughout the market's life.
+
+### 4. `totalPayout` in `settleMarket` must be in USDC (6-dec), not LSMath (18-dec)
+
+`q[winningOutcome]` in LSMath uses 18-decimal fixed-point. Market contracts must convert to USDC decimals before calling `settleMarket`:
+
+```solidity
+uint256 payoutUSDC = q[winningOutcome] / 1e12;
+```
+
+### 5. `registerMarket` requires a deployed contract address AND the capacity check
+
+Two categories of pre-conditions: (0) `market.code.length > 0` (EOA registration is blocked), (1)–(4) administrative checks (zero-address, outcome count, duplicate, market cap). Then one capacity check: `newTotalLiab ≤ totalAssets() × (BPS_BASE − reserveBps) / BPS_BASE`. With default `reserveBps = 2000` this is an 80% ceiling. If the vault has no deposits, the capacity check fails immediately (activeCap = 0).
+
+### 6. `maxWithdraw` returns 0 when vault is at reserve floor — not an error
+
+If `_freeLiquidity()` returns 0 (vault fully utilised or the `reserveBps` floor consuming all available USDC), `maxWithdraw` returns 0 for all LPs. As markets earn spread through trading, `_freeLiquidity` rises automatically and LP withdrawals become available again without any admin action.
+
+### 7. Paused vault: `settleMarket` and `forceSettleMarket` still work
+
+Neither settlement path is gated by `whenNotPaused`. Markets can always be settled and liabilities cleared. Winners must wait until unpaused to call `claimWinnings`.
+
+### 8. `deregisterMarket` after ANY trade is blocked
+
+Once `hasTrades = true`, `deregisterMarket` reverts. For a genuinely broken post-trade market, use `forceSettleMarket` — it is the correct emergency path and clears the liability immediately.
+
+### 10. `forceSettleMarket` sets `settledPayout = 0` — no claims possible
+
+After force-settlement, `claimWinnings` will revert for any amount because `settledPayout = 0`. There is no path for winners to recover funds from a force-settled market. This is by design — only call `forceSettleMarket` for markets whose oracle has genuinely failed.
+
+### 11. `__gap` size must decrease when adding variables
+
+Adding 2 new state variables requires changing `uint256[45] private __gap` to `uint256[43] private __gap`. Forgetting to shrink causes wasted slots (not harmful). Adding variables WITHOUT shrinking causes a storage collision in subsequent upgrades.
