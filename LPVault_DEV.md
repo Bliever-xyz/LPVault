@@ -143,7 +143,7 @@ bytes32 UPGRADER_ROLE          = keccak256("UPGRADER_ROLE")
 | MARKET_MANAGER_ROLE | `admin` param | Register/deregister markets |
 | PAUSER_ROLE | `admin` param | Pause/unpause vault |
 | UPGRADER_ROLE | `admin` param | Authorize UUPS upgrades |
-| MARKET_ROLE | *auto-granted per market* | Call collectTradeCost/settleMarket/claimWinnings |
+| MARKET_ROLE | *auto-granted per market by registerMarket; auto-revoked by forceSettleMarket or when claimedPayout == settledPayout* | Call collectTradeCost/settleMarket/claimWinnings |
 
 **Function → Role requirement:**
 
@@ -279,6 +279,18 @@ event MarketForceSettled(address indexed market, uint256 lossAbsorbed);
 event WinningsClaimed(address indexed market, address indexed winner, uint256 amount);
 ```
 Emitted each time a winner receives USDC.
+
+### `MarketFullyClaimed`
+```solidity
+event MarketFullyClaimed(address indexed market, uint256 totalPaid);
+```
+Emitted inside `claimWinnings` when `claimedPayout == settledPayout` — i.e. every winner has been paid and the market is fully closed. At this point MARKET_ROLE is automatically revoked from the market contract. Off-chain indexers should use this event as the definitive "market closed" signal.
+
+### `MarketExpiredUntraded`
+```solidity
+event MarketExpiredUntraded(address indexed market, uint256 riskBudget);
+```
+Emitted inside `settleMarket` when `!info.hasTrades` — the market was settled without ever receiving a trade. The full `riskBudget` is freed back into LP NAV. Distinct from `MarketSettled` to prevent misleading "profit" accounting for dead markets in off-chain indexers.
 
 ### Parameter update events
 ```solidity
@@ -439,14 +451,31 @@ function settleMarket(uint256 totalPayout)
 info.settled = true
 info.settledPayout = totalPayout
 info.currentLiability = 0
-totalLiability -= info.currentLiability  ← live value, not riskBudget
---activeMarketCount  (reverts on underflow — surfaces accounting bugs)
+
+// unchecked — liveLiab ≤ totalLiability by Σ currentLiability invariant
+totalLiability -= liveLiab (live value, not riskBudget)
+
+--activeMarketCount  (intentionally checked — underflow surfaces accounting bugs)
+
+// unchecked — riskBudget ≥ totalPayout validated at checks gate
+emit MarketSettled(market, totalPayout, riskBudget - totalPayout)
+
+if !hasTrades: emit MarketExpiredUntraded(market, riskBudget)
+
+if totalPayout == 0:
+    _revokeRole(MARKET_ROLE, market)   ← zero-payout path; no claim call can ever arrive
+    emit MarketFullyClaimed(market, 0)
+
 _assertSolvent() called ← accounting invariant check
 ```
 
 **No USDC moves here** — only accounting. USDC moves in `claimWinnings`.
 
-**`profit` in emitted event:** `riskBudget - totalPayout`. The difference between worst-case reserved and what was actually owed. Stays in vault and increases LP NAV.
+**Profit in emitted event:** `riskBudget - totalPayout` is inlined directly into `MarketSettled` inside an `unchecked` block. The check `totalPayout > riskBudget` at the checks gate makes underflow impossible. The difference between worst-case reserved and what was actually owed stays in the vault and increases LP NAV.
+
+**`MarketExpiredUntraded` note:** If `hasTrades == false`, an additional `MarketExpiredUntraded(market, riskBudget)` event is emitted after `MarketSettled`. This signals that the riskBudget was freed with no trade activity — no trader USDC was ever at risk.
+
+**Zero-payout MARKET_ROLE revocation:** When `totalPayout == 0`, `settledPayout = 0` and `claimedPayout` starts at `0`. The equality `claimedPayout == settledPayout` is satisfied before any claim is attempted, but the code enforcing it lives inside `claimWinnings`. No valid call can reach it — `amount == 0` hits `ZeroAmount()` and `amount > 0` hits `PayoutExceedsSettlement` with `remaining = 0`. MARKET_ROLE is therefore revoked inside `settleMarket` for this case, with `MarketFullyClaimed(market, 0)` emitted for indexer consistency.
 
 **`_assertSolvent` note:** Should never revert. If it does, an upstream accounting path has corrupted state. This is an auditing / testing aid, not a runtime guard.
 
@@ -468,26 +497,34 @@ function forceSettleMarket(address market)
 
 **State changes:**
 ```
-totalLiability -= info.currentLiability  ← absorbed as worst-case LP loss
---activeMarketCount  (reverts on underflow — surfaces accounting bugs)
+// unchecked — lossAbsorbed ≤ totalLiability by Σ currentLiability invariant
+totalLiability -= lossAbsorbed  ← absorbed as worst-case LP loss
+
+--activeMarketCount  (intentionally checked — underflow surfaces accounting bugs)
 info.settled = true
 info.settledPayout = 0          ← no winners paid
 info.currentLiability = 0
 info.riskBudget = 0
 MARKET_ROLE revoked from market
+emit MarketForceSettled(market, lossAbsorbed)
+_assertSolvent() called ← accounting invariant check; consistent with settleMarket
 ```
 
 **Economic effect:** LP NAV decreases by `lossAbsorbed = info.currentLiability`. This is the cost of unresolvable market risk. Call only when the market is genuinely broken — there is no undo.
 
-**After forceSettleMarket:** The market record remains in `markets` mapping as `settled=true` with zero payouts. `claimWinnings` will revert (`MarketNotSettled` check passes but `settledPayout=0` makes all claims `PayoutExceedsSettlement`).
+**After forceSettleMarket:** The market record remains in `markets` mapping as `settled=true` with zero payouts. `claimWinnings` will revert for any amount because `settledPayout = 0`.
 
 ---
+
+#### `claimWinnings`
 ```solidity
 function claimWinnings(address winner, uint256 amount)
-    external onlyRole(MARKET_ROLE) nonReentrant whenNotPaused
+    external onlyRole(MARKET_ROLE) nonReentrant
 ```
 
 **msg.sender is the settled market contract.**
+
+**Not pause-gated** — winners with a verified, settled payout must never be permanently blocked by vault-level operational pauses. Both `settleMarket` and `claimWinnings` are intentionally unpausable so the full resolution flow remains unblocked during emergencies.
 
 **Pre-conditions:**
 1. `markets[msg.sender].registered == true`
@@ -504,6 +541,14 @@ info.claimedPayout += amount
 ```
 IERC20(asset()).safeTransfer(winner, amount)
 ```
+
+**Post-drain role revocation:**
+```
+if (info.claimedPayout == info.settledPayout):   // only reachable when settledPayout > 0
+    _revokeRole(MARKET_ROLE, market)
+    emit MarketFullyClaimed(market, info.settledPayout)
+```
+Once all authorised winnings are paid, MARKET_ROLE is automatically revoked. No admin call needed. For zero-payout markets (`settledPayout == 0`), this branch is unreachable — revocation occurs inside `settleMarket` instead, where `MarketFullyClaimed(market, 0)` is emitted.
 
 **Pull-payment pattern:** Market orchestrates, vault pays. Winners call `market.claim()` → market verifies share balance → market calls `vault.claimWinnings(winner, amount)`.
 
@@ -535,8 +580,8 @@ IERC20(asset()).safeTransfer(winner, amount)
 #### `pause()` / `unpause()`
 - Caller: `PAUSER_ROLE`
 - `_update` hook: reverts on ANY token transfer while paused (deposit, withdraw, burn, transfer).
-- `collectTradeCost` and `claimWinnings`: gated by `whenNotPaused`.
-- `settleMarket`: NOT paused — markets must always resolve.
+- `collectTradeCost`: gated by `whenNotPaused`.
+- `settleMarket`, `forceSettleMarket`, `claimWinnings`: NOT paused — markets resolve and winners claim regardless of vault operational state.
 
 ---
 
@@ -848,6 +893,24 @@ function invariant_liabilityBound(address[] calldata knownMarkets) external {
 function invariant_isSolvent() external {
     assertTrue(vault.isSolvent());
 }
+
+// Invariant 10: MARKET_ROLE is revoked on every market exit path
+// — zero-payout settlement: revoked in settleMarket (settledPayout == 0)
+// — normal full-claim:      revoked in claimWinnings (claimedPayout == settledPayout > 0)
+// — force-settlement:       revoked in forceSettleMarket
+function invariant_roleRevokedOnAllExitPaths(address[] calldata knownMarkets) external {
+    for (uint i = 0; i < knownMarkets.length; i++) {
+        BlieverV1Pool.MarketInfo memory info = vault.getMarketInfo(knownMarkets[i]);
+        // Zero-payout settled: role must be gone immediately after settlement
+        if (info.settled && info.settledPayout == 0) {
+            assertFalse(vault.hasRole(vault.MARKET_ROLE(), knownMarkets[i]));
+        }
+        // Non-zero payout fully claimed: role must be gone after last claim
+        if (info.settled && info.settledPayout > 0 && info.claimedPayout == info.settledPayout) {
+            assertFalse(vault.hasRole(vault.MARKET_ROLE(), knownMarkets[i]));
+        }
+    }
+}
 ```
 
 ---
@@ -887,13 +950,25 @@ Two categories of pre-conditions: (0) `market.code.length > 0` (EOA registration
 
 If `_freeLiquidity()` returns 0 (vault fully utilised or the `reserveBps` floor consuming all available USDC), `maxWithdraw` returns 0 for all LPs. As markets earn spread through trading, `_freeLiquidity` rises automatically and LP withdrawals become available again without any admin action.
 
-### 7. Paused vault: `settleMarket` and `forceSettleMarket` still work
+### 7. Paused vault: `settleMarket`, `forceSettleMarket`, and `claimWinnings` still work
 
-Neither settlement path is gated by `whenNotPaused`. Markets can always be settled and liabilities cleared. Winners must wait until unpaused to call `claimWinnings`.
+None of the resolution or payout paths are gated by `whenNotPaused`. Markets can always settle, liabilities can always be cleared, and winners can always claim their verified payouts. This guarantees that an emergency pause cannot permanently strand funds that have already been authorised for distribution.
 
 ### 8. `deregisterMarket` after ANY trade is blocked
 
 Once `hasTrades = true`, `deregisterMarket` reverts. For a genuinely broken post-trade market, use `forceSettleMarket` — it is the correct emergency path and clears the liability immediately.
+
+### 9. MARKET_ROLE is automatically revoked when a market is fully closed
+
+Three paths cover all exit states:
+
+| Path | When | Revocation point |
+|---|---|---|
+| Normal settlement, `totalPayout > 0` | All winners claimed (`claimedPayout == settledPayout`) | Inside `claimWinnings` on the final claim |
+| Normal settlement, `totalPayout == 0` | All positions were on losing outcomes; no claim can arrive | Inside `settleMarket` immediately after effects |
+| Emergency path | `forceSettleMarket` called by admin | Inside `forceSettleMarket` immediately after effects |
+
+No admin action is needed in any path. The zero-payout case is handled at settlement time because `claimWinnings` would revert on any attempt (`ZeroAmount` if `amount == 0`, `PayoutExceedsSettlement` if `amount > 0` with `remaining = 0`) — the revocation code inside `claimWinnings` is structurally unreachable for this case.
 
 ### 10. `forceSettleMarket` sets `settledPayout = 0` — no claims possible
 

@@ -179,12 +179,13 @@ Oracle resolves Market #1 → Outcome i wins
 2. Vault:
       a. marks market as settled
       b. sets settledPayout = totalPayout
-      c. releases currentLiability (live value) from totalLiability
-      d. emits MarketSettled(market, totalPayout, profit=riskBudget−totalPayout)
+      c. releases currentLiability (live value) from totalLiability   [unchecked — invariant proven]
+      d. emits MarketSettled(market, totalPayout, profit=riskBudget−totalPayout)  [unchecked — check-gated]
       e. emits MarketExpiredUntraded(market, riskBudget) if no trades ever occurred
-      f. calls _assertSolvent() — accounting sanity check
+      f. if totalPayout == 0: revokes MARKET_ROLE, emits MarketFullyClaimed(market, 0)
+      g. calls _assertSolvent() — accounting sanity check
 
-3. Each winner calls market.claim() → market calls:
+3. Each winner (if totalPayout > 0) calls market.claim() → market calls:
       vault.claimWinnings(winner, amount)
 
 4. Vault:
@@ -472,7 +473,7 @@ V2 upgrades may **append** variables before `__gap` and shrink `__gap` according
 | No idle yield in V1 (Compound/Moonwell) | Reduces attack surface; add in V2 with thorough audit |
 | Settlement and winner claims NOT pause-gated | Markets must always settle and winners must always be able to claim their verified payouts; blocking claims during a pause would strand funds indefinitely |
 | `deregisterMarket` only if no trades | Prevents stranding trader USDC without recourse |
-| MARKET_ROLE auto-revoked on full claim | Removes attack surface after a market is fully drained; no admin action required |
+| MARKET_ROLE auto-revoked on all exit paths | Removes attack surface after a market is fully closed regardless of payout amount: zero-payout markets are revoked inside `settleMarket` (no valid claim can ever arrive); non-zero payout markets are revoked inside `claimWinnings` on the final claim; force-settled markets are revoked inside `forceSettleMarket` |
 | `MarketFullyClaimed` event on full drain | Off-chain indexers and dashboards have a definitive signal that a market is closed |
 | `MarketExpiredUntraded` event on zero-trade settlement | Distinguishes genuine market profit from riskBudget release on dead markets; prevents misleading indexer accounting |
 
