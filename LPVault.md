@@ -180,8 +180,9 @@ Oracle resolves Market #1 → Outcome i wins
       a. marks market as settled
       b. sets settledPayout = totalPayout
       c. releases currentLiability (live value) from totalLiability
-      d. calls _assertSolvent() — accounting sanity check
-      e. emits MarketSettled(market, totalPayout, profit=riskBudget−totalPayout)
+      d. emits MarketSettled(market, totalPayout, profit=riskBudget−totalPayout)
+      e. emits MarketExpiredUntraded(market, riskBudget) if no trades ever occurred
+      f. calls _assertSolvent() — accounting sanity check
 
 3. Each winner calls market.claim() → market calls:
       vault.claimWinnings(winner, amount)
@@ -191,6 +192,9 @@ Oracle resolves Market #1 → Outcome i wins
       b. increments claimedPayout
       c. safeTransfer(vault → winner, amount USDC)
       d. emits WinningsClaimed
+      e. when claimedPayout == settledPayout:
+            revokes MARKET_ROLE from market contract
+            emits MarketFullyClaimed(market, totalPaid)
 ```
 
 ### 4.4 Emergency Settlement Flow
@@ -206,6 +210,7 @@ Vault:
       b. marks market as settled with settledPayout = 0 (winners receive nothing)
       c. revokes MARKET_ROLE from market contract
       d. emits MarketForceSettled(market, lossAbsorbed)
+      e. calls _assertSolvent() — accounting sanity check
 ```
 
 ### 4.5 Net Value Flow
@@ -337,6 +342,7 @@ The non-zero decimals offset in ERC-4626 provides **virtual share protection**: 
 │       │         │             │ ── admin emergency path  │
 │       │         │             │ ── absorbs currentLiab   │
 │       │         │             │ ── revokes MARKET_ROLE   │
+│       │         │             │ ── _assertSolvent()      │
 │       │         │             ▼                          │
 │       │         │      FORCE SETTLED                     │
 │       │         │                                        │
@@ -351,6 +357,7 @@ The non-zero decimals offset in ERC-4626 provides **virtual share protection**: 
 │       │                                                  │
 │       │  settleMarket(totalPayout)                       │
 │       │  ── releases currentLiability from totalLiability│
+│       │  ── emits MarketExpiredUntraded if !hasTrades    │
 │       │  ── _assertSolvent() called                      │
 │       ▼                                                  │
 │   SETTLED                                                │
@@ -358,6 +365,8 @@ The non-zero decimals offset in ERC-4626 provides **virtual share protection**: 
 │  claimWinnings(winner, amount)  [many times]             │
 │       │                                                  │
 │       │  (all settledPayout claimed)                     │
+│       │  ── revokes MARKET_ROLE                          │
+│       │  ── emits MarketFullyClaimed                     │
 │       ▼                                                  │
 │   FULLY CLAIMED                                          │
 └─────────────────────────────────────────────────────────┘
@@ -377,10 +386,11 @@ DEFAULT_ADMIN_ROLE
     ├── forceSettleMarket()  ──  emergency market resolution
     └── (can grant any role to any address)
 
-MARKET_ROLE (auto-granted per market by MARKET_MANAGER)
+MARKET_ROLE (auto-granted per market by MARKET_MANAGER;
+             auto-revoked on forceSettleMarket or when all winnings are claimed)
     ├── collectTradeCost()       ← updates live totalLiability atomically per trade
     ├── settleMarket()
-    └── claimWinnings()
+    └── claimWinnings()          ← role auto-revoked when claimedPayout == settledPayout
 ```
 
 The vault uses OpenZeppelin `AccessControlUpgradeable`. All four privileged roles are initially granted to the deployer-specified `admin` address. In production this should be a multisig or timelock.
@@ -397,10 +407,12 @@ The vault uses OpenZeppelin `AccessControlUpgradeable`. All four privileged role
 | Market over-reports payout | `PayoutExceedsRiskBudget` revert if payout > riskBudget |
 | Winners double-claim | `claimedPayout` counter prevents exceeding `settledPayout` |
 | Oracle permanently fails / market stuck | `forceSettleMarket` emergency path clears liability |
-| Accounting drift undetected | `_assertSolvent()` called after every settlement |
+| Accounting drift undetected | `_assertSolvent()` called after every settlement (normal and emergency) |
 | Bad market contract registered | `MARKET_MANAGER_ROLE` guard + protocol governance |
 | Smart contract upgrade risk | UUPS + `UPGRADER_ROLE` + `_disableInitializers()` |
 | Emergency circuit breaker | `pause()` halts deposits, withdrawals, trades, transfers |
+| Winners locked out during emergency pause | `claimWinnings` is NOT pause-gated — settled payouts are always claimable |
+| Settled market retains MARKET_ROLE indefinitely | Role automatically revoked when `claimedPayout == settledPayout` |
 | Share inflation attack | 12-decimal ERC-4626 offset provides virtual protection |
 
 ### 8.3 CEI Pattern
@@ -453,13 +465,16 @@ V2 upgrades may **append** variables before `__gap` and shrink `__gap` according
 | Live `totalLiability` tracks `currentLiability` sum | LP NAV reflects true position; improves with volume |
 | Single `reserveBps` capacity check | One parameter controls both the registration ceiling and the LP withdrawal floor simultaneously; no three-tier complexity |
 | `forceSettleMarket` emergency path | Oracle failures must be recoverable without permanent liability lockup |
-| `_assertSolvent()` at settlement | On-chain invariant assertion catches accounting bugs at the earliest possible moment |
+| `_assertSolvent()` at settlement (normal and emergency) | On-chain invariant assertion catches accounting bugs at the earliest possible moment; consistent across both paths |
 | No ERC20Burnable standalone `burn()` | ERC-4626 `redeem`/`withdraw` handles all legitimate burn scenarios; standalone burn adds confusion |
 | No ERC-3156 Flash Mint on bLP | No concrete V1 use case; bLP flash-mint can temporarily inflate `totalSupply` creating accounting edge cases |
 | UUPS upgradeability kept | Pre-launch code; critical bugs must be fixable. Immutability is earned after external audit, not assumed before it |
 | No idle yield in V1 (Compound/Moonwell) | Reduces attack surface; add in V2 with thorough audit |
-| Settlement NOT pause-gated | Markets must always be settleable to unblock traders |
+| Settlement and winner claims NOT pause-gated | Markets must always settle and winners must always be able to claim their verified payouts; blocking claims during a pause would strand funds indefinitely |
 | `deregisterMarket` only if no trades | Prevents stranding trader USDC without recourse |
+| MARKET_ROLE auto-revoked on full claim | Removes attack surface after a market is fully drained; no admin action required |
+| `MarketFullyClaimed` event on full drain | Off-chain indexers and dashboards have a definitive signal that a market is closed |
+| `MarketExpiredUntraded` event on zero-trade settlement | Distinguishes genuine market profit from riskBudget release on dead markets; prevents misleading indexer accounting |
 
 ### 10.2 Known Limitations
 
