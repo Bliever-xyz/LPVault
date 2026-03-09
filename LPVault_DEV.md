@@ -46,14 +46,14 @@ OpenZeppelin Upgradeable (^5.x):
 ├── token/ERC20/ERC20Upgradeable.sol
 ├── token/ERC20/extensions/ERC4626Upgradeable.sol
 ├── token/ERC20/extensions/ERC20PermitUpgradeable.sol
-├── access/AccessControlUpgradeable.sol
-├── utils/PausableUpgradeable.sol
-└── utils/ReentrancyGuardUpgradeable.sol
+├── access/extensions/AccessControlDefaultAdminRulesUpgradeable.sol
+└── utils/PausableUpgradeable.sol
 
 OpenZeppelin Standard:
 ├── token/ERC20/IERC20.sol
 ├── token/ERC20/utils/SafeERC20.sol
-└── utils/math/Math.sol
+├── utils/math/Math.sol
+└── utils/ReentrancyGuard.sol        ← stateless in OZ 5.5+; no upgradeable variant needed
 ```
 
 **Note:** `LSMath.sol` is used by market contracts to compute trade costs and liabilities. `BlieverV1Pool` receives the *results* of those calculations — it does not perform LS-LMSR math internally.
@@ -69,8 +69,8 @@ BlieverV1Pool
  │                                      └─ IERC4626, IERC20Metadata
  ├─ ERC20PermitUpgradeable      extends ERC20Upgradeable + EIP712Upgradeable
  ├─ PausableUpgradeable
- ├─ AccessControlUpgradeable    implements IERC165
- ├─ ReentrancyGuardUpgradeable
+ ├─ AccessControlDefaultAdminRulesUpgradeable   implements IERC165 + two-step admin transfer
+ ├─ ReentrancyGuard             (standard; stateless in OZ 5.5+ via transient storage)
  └─ UUPSUpgradeable
 ```
 
@@ -81,13 +81,13 @@ BlieverV1Pool
 | `decimals()` | `override(ERC20Upgradeable, ERC4626Upgradeable)` | Both declare it; explicit 18 returned |
 | `_update()` | `override(ERC20Upgradeable)` + `whenNotPaused` | Adds pause check to all transfers |
 | `totalAssets()` | `override(ERC4626Upgradeable)` | Returns raw USDC balance as full LP NAV |
-| `maxWithdraw()` | `override(ERC4626Upgradeable)` | Adds liquidity lock + 20% reserve constraint |
-| `maxRedeem()` | `override(ERC4626Upgradeable)` | Adds liquidity lock + 20% reserve constraint |
+| `maxWithdraw()` | `override(ERC4626Upgradeable)` | Adds liquidity lock + reserve constraint |
+| `maxRedeem()` | `override(ERC4626Upgradeable)` | Adds liquidity lock + reserve constraint |
 | `maxDeposit()` | `override(ERC4626Upgradeable)` | Returns 0 when paused |
 | `maxMint()` | `override(ERC4626Upgradeable)` | Returns 0 when paused |
 | `_decimalsOffset()` | `override(ERC4626Upgradeable)` | Returns 12 (bLP = 18 dec) |
 | `_authorizeUpgrade()` | `override(UUPSUpgradeable)` | Requires UPGRADER_ROLE |
-| `supportsInterface()` | `override(AccessControlUpgradeable)` | Merges ERC-165 support |
+| `supportsInterface()` | `override(AccessControlDefaultAdminRulesUpgradeable)` | Merges ERC-165 support |
 
 ---
 
@@ -128,21 +128,23 @@ Each `markets[addr]` occupies 5 storage slots:
 ## 4. Roles & Access Control
 
 ```solidity
-bytes32 DEFAULT_ADMIN_ROLE     = 0x00 (OZ default)
+bytes32 DEFAULT_ADMIN_ROLE     = 0x00 (OZ default — two-step transfer via AccessControlDefaultAdminRules)
 bytes32 MARKET_MANAGER_ROLE    = keccak256("MARKET_MANAGER_ROLE")
 bytes32 MARKET_ROLE            = keccak256("MARKET_ROLE")
 bytes32 PAUSER_ROLE            = keccak256("PAUSER_ROLE")
 bytes32 UPGRADER_ROLE          = keccak256("UPGRADER_ROLE")
+bytes32 EMERGENCY_ROLE         = keccak256("EMERGENCY_ROLE")
 ```
 
 **Who holds what after `initialize`:**
 
 | Role | Initial Holder | Purpose |
 |---|---|---|
-| DEFAULT_ADMIN_ROLE | `admin` param | Grant/revoke any role; collect fees; set params; force-settle |
+| DEFAULT_ADMIN_ROLE | `admin` param (two-step transfer enforced by OZ DefaultAdminRules) | Grant/revoke any role; set params; unpause; force-admin actions |
 | MARKET_MANAGER_ROLE | `admin` param | Register/deregister markets |
-| PAUSER_ROLE | `admin` param | Pause/unpause vault |
+| PAUSER_ROLE | `admin` param | Pause vault (low-latency ops multisig in production) |
 | UPGRADER_ROLE | `admin` param | Authorize UUPS upgrades |
+| EMERGENCY_ROLE | `admin` param | Force-settle broken/stuck markets (faster-response multisig in production) |
 | MARKET_ROLE | *auto-granted per market by registerMarket; auto-revoked by forceSettleMarket or when claimedPayout == settledPayout* | Call collectTradeCost/settleMarket/claimWinnings |
 
 **Function → Role requirement:**
@@ -153,12 +155,13 @@ bytes32 UPGRADER_ROLE          = keccak256("UPGRADER_ROLE")
 | `deregisterMarket` | MARKET_MANAGER_ROLE |
 | `collectTradeCost` | MARKET_ROLE (msg.sender = market contract) |
 | `settleMarket` | MARKET_ROLE (msg.sender = market contract) |
-| `forceSettleMarket` | DEFAULT_ADMIN_ROLE |
+| `forceSettleMarket` | EMERGENCY_ROLE |
 | `claimWinnings` | MARKET_ROLE (msg.sender = market contract) |
 | `setAlpha` | DEFAULT_ADMIN_ROLE |
 | `setMaxRiskPerMarket` | DEFAULT_ADMIN_ROLE |
-| `setMaxAllocationBps` | DEFAULT_ADMIN_ROLE |
-| `pause` / `unpause` | PAUSER_ROLE |
+| `setReserveBps` | DEFAULT_ADMIN_ROLE |
+| `pause` | PAUSER_ROLE |
+| `unpause` | DEFAULT_ADMIN_ROLE |
 | `_authorizeUpgrade` | UPGRADER_ROLE |
 
 ---
@@ -232,6 +235,7 @@ registered=T settled=T  →  SETTLED (payout may be partially or fully claimed)
 | `PayoutExceedsSettlement` | `PayoutExceedsSettlement(uint256 requested, uint256 remaining)` | winners claim more than authorized |
 | `ExceedsMaxMarkets` | `ExceedsMaxMarkets(uint256 active)` | > 10 000 active markets |
 | `VaultInsolvent` | `VaultInsolvent(uint256 balance, uint256 liability)` | raw balance < totalLiability (accounting bug) |
+| `AccountingInvariantViolated` | `AccountingInvariantViolated()` | `claimedPayout > settledPayout` detected before subtraction in `claimWinnings` (should never occur in correct operation) |
 
 ---
 
@@ -299,6 +303,12 @@ event MaxRiskUpdated(uint256 oldMax, uint256 newMax);
 event ReserveBpsUpdated(uint16 oldBps, uint16 newBps);
 ```
 
+### `LiabilityCapApplied`
+```solidity
+event LiabilityCapApplied(address indexed market, uint256 reported, uint256 cap);
+```
+Emitted from `collectTradeCost` when a market contract reports `newLiability > riskBudget`. This violates the LS-LMSR Proposition 4.9 invariant — the vault silently caps the value to `riskBudget` to maintain solvency, but fires this event so monitors and auditors can immediately identify the misbehaving market. Any occurrence of this event warrants investigation.
+
 ---
 
 ## 9. Function Reference
@@ -330,12 +340,12 @@ __ERC20_init("Believer LP", "bLP")
 __ERC4626_init(IERC20(usdc))
 __ERC20Permit_init("Believer LP")
 __Pausable_init()
-__AccessControl_init()
-__ReentrancyGuard_init()
-__UUPSUpgradeable_init()
+__AccessControlDefaultAdminRules_init(0, admin)   ← sets admin + enforces two-step transfer; minDelay=0 at launch
 ```
 
-**Side effects:** Grants all four privileged roles to `admin`.
+**Side effects:** Grants all five privileged roles to `admin` (`DEFAULT_ADMIN_ROLE` via init; remaining four via `_grantRole`).
+
+> **Note:** `__ReentrancyGuard_init()` and `__UUPSUpgradeable_init()` are **not** called. In OZ 5.x, `ReentrancyGuard` uses transient storage and is stateless; `UUPSUpgradeable` holds no state of its own. Neither requires an init call.
 
 ---
 
@@ -406,6 +416,10 @@ function collectTradeCost(address trader, uint256 cost, uint256 newLiability)
 **State changes (before external call — CEI):**
 ```
 capped = min(newLiability, info.riskBudget)
+
+// If cap fires, Prop 4.9 is violated — emit LiabilityCapApplied for monitoring
+if newLiability > info.riskBudget: emit LiabilityCapApplied(market, newLiability, riskBudget)
+
 old    = info.currentLiability
 
 // Delta-update totalLiability (live LS-LMSR tracking)
@@ -484,10 +498,10 @@ _assertSolvent() called ← accounting invariant check
 #### `forceSettleMarket`
 ```solidity
 function forceSettleMarket(address market)
-    external onlyRole(DEFAULT_ADMIN_ROLE) nonReentrant
+    external onlyRole(EMERGENCY_ROLE) nonReentrant
 ```
 
-**Emergency path only.** Use when a market's oracle has permanently failed or the market contract is broken and cannot call `settleMarket` itself.
+**Emergency path only.** Use when a market's oracle has permanently failed or the market contract is broken and cannot call `settleMarket` itself. Guarded by `EMERGENCY_ROLE` — a faster-response multisig than `DEFAULT_ADMIN_ROLE` — so urgent action does not depend on full governance quorum.
 
 **Not pause-gated** — emergencies must be handleable at any time.
 
@@ -530,10 +544,14 @@ function claimWinnings(address winner, uint256 amount)
 1. `markets[msg.sender].registered == true`
 2. `markets[msg.sender].settled == true`
 3. `winner != address(0)`, `amount > 0`
-4. `amount ≤ info.settledPayout - info.claimedPayout`
+4. `info.claimedPayout <= info.settledPayout` — explicit invariant guard (reverts `AccountingInvariantViolated` if violated)
+5. `amount ≤ info.settledPayout - info.claimedPayout`
 
 **State changes (before USDC transfer — CEI):**
 ```
+// Explicit invariant guard — claimedPayout > settledPayout is an accounting bug
+if (info.claimedPayout > info.settledPayout): revert AccountingInvariantViolated()
+
 info.claimedPayout += amount
 ```
 
@@ -578,7 +596,9 @@ Once all authorised winnings are paid, MARKET_ROLE is automatically revoked. No 
 ### Pause Control
 
 #### `pause()` / `unpause()`
-- Caller: `PAUSER_ROLE`
+- `pause()`: Caller must have `PAUSER_ROLE`.
+- `unpause()`: Caller must have `DEFAULT_ADMIN_ROLE`.
+- **Asymmetric by design:** A compromised `PAUSER_ROLE` key can halt the vault but cannot defeat its own pause by immediately unpausing. Only a DEFAULT_ADMIN_ROLE quorum can resume operations.
 - `_update` hook: reverts on ANY token transfer while paused (deposit, withdraw, burn, transfer).
 - `collectTradeCost`: gated by `whenNotPaused`.
 - `settleMarket`, `forceSettleMarket`, `claimWinnings`: NOT paused — markets resolve and winners claim regardless of vault operational state.
@@ -594,11 +614,12 @@ Returns `_freeLiquidity()`. This is the maximum USDC LPs can collectively withdr
 Returns `totalAssets() − totalLiability`. The net USDC owned by LPs after subtracting all active market loss exposure. Rising NAV signals the vault is accumulating spread from trading activity.
 
 #### `utilizationBps() → uint256`
-Returns `totalLiability × 10_000 / totalAssets()`.
+Returns `totalLiability × 10_000 / activeCap` where `activeCap = totalAssets × (BPS_BASE − reserveBps) / BPS_BASE`.
+- Measures against **active capital** (deployable to markets), not total assets. This gives operators an accurate headroom signal: a reading of 7000 means 30% of market-available capital remains, regardless of reserve buffer size.
 - 0 = no active markets
-- 5000 = 50% of LP assets encumbered by live market liabilities
-- 10000 = fully encumbered (no LP withdrawal possible)
-- >10000 = undercollateralised (cannot occur through normal paths)
+- 5000 = 50% of active capital encumbered by live market liabilities
+- 10000 = active capital fully encumbered (no new markets possible)
+- `type(uint256).max` = reserve buffer consumes all assets (edge case)
 
 Because `totalLiability` tracks live worst-case loss (not fixed riskBudgets), utilisation naturally falls as markets accumulate trading volume.
 
@@ -977,3 +998,11 @@ After force-settlement, `claimWinnings` will revert for any amount because `sett
 ### 11. `__gap` size must decrease when adding variables
 
 Adding 2 new state variables requires changing `uint256[45] private __gap` to `uint256[43] private __gap`. Forgetting to shrink causes wasted slots (not harmful). Adding variables WITHOUT shrinking causes a storage collision in subsequent upgrades.
+
+### 12. `unpause()` requires DEFAULT_ADMIN_ROLE, not PAUSER_ROLE
+
+`pause()` is intentionally low-privilege (PAUSER_ROLE) for speed. `unpause()` requires DEFAULT_ADMIN_ROLE. Integration scripts that call `unpause` must use the admin multisig, not the ops pauser key.
+
+### 13. `forceSettleMarket` requires EMERGENCY_ROLE
+
+The emergency settlement path is guarded by `EMERGENCY_ROLE`, not `DEFAULT_ADMIN_ROLE`. In production these should be separate multisigs. If EMERGENCY_ROLE is not yet delegated to a separate key, DEFAULT_ADMIN_ROLE holds it by default (granted in `initialize`) and can still execute force-settlement.

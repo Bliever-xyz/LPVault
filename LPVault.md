@@ -380,11 +380,12 @@ The non-zero decimals offset in ERC-4626 provides **virtual share protection**: 
 ### 8.1 Role-Based Access Control
 
 ```
-DEFAULT_ADMIN_ROLE
+DEFAULT_ADMIN_ROLE  (two-step transfer via AccessControlDefaultAdminRules)
     ├── MARKET_MANAGER_ROLE  ──  register / deregister markets
-    ├── PAUSER_ROLE          ──  pause / unpause vault
+    ├── PAUSER_ROLE          ──  pause vault (low-latency ops multisig in production)
     ├── UPGRADER_ROLE        ──  authorize UUPS upgrades
-    ├── forceSettleMarket()  ──  emergency market resolution
+    ├── EMERGENCY_ROLE       ──  force-settle broken/stuck markets (faster-response multisig)
+    ├── unpause()            ──  reserved to DEFAULT_ADMIN_ROLE only (asymmetric with pause)
     └── (can grant any role to any address)
 
 MARKET_ROLE (auto-granted per market by MARKET_MANAGER;
@@ -394,7 +395,7 @@ MARKET_ROLE (auto-granted per market by MARKET_MANAGER;
     └── claimWinnings()          ← role auto-revoked when claimedPayout == settledPayout
 ```
 
-The vault uses OpenZeppelin `AccessControlUpgradeable`. All four privileged roles are initially granted to the deployer-specified `admin` address. In production this should be a multisig or timelock.
+The vault uses OpenZeppelin `AccessControlDefaultAdminRulesUpgradeable`, which enforces a two-step, minimum-delay process for transferring `DEFAULT_ADMIN_ROLE`. A compromised admin key cannot silently hand control to an attacker without a pending acceptance window. All five privileged roles are initially granted to the deployer-specified `admin` address. In production, each role should be held by a distinct multisig or timelock tuned to its required response speed.
 
 ### 8.2 Defence-in-Depth
 
@@ -406,14 +407,17 @@ The vault uses OpenZeppelin `AccessControlUpgradeable`. All four privileged role
 | Vault over-commits to too many markets | Single capacity check: `newTotalLiab ≤ assets × (100% − reserveBps)` |
 | EOA registered as market (MARKET_ROLE abuse) | `registerMarket` reverts with `NotAContract` if `market.code.length == 0` |
 | Market over-reports payout | `PayoutExceedsRiskBudget` revert if payout > riskBudget |
-| Winners double-claim | `claimedPayout` counter prevents exceeding `settledPayout` |
-| Oracle permanently fails / market stuck | `forceSettleMarket` emergency path clears liability |
+| Winners double-claim | `claimedPayout` counter prevents exceeding `settledPayout`; `AccountingInvariantViolated` revert if counter ever exceeds budget |
+| Oracle permanently fails / market stuck | `forceSettleMarket` (EMERGENCY_ROLE) emergency path clears liability |
 | Accounting drift undetected | `_assertSolvent()` called after every settlement (normal and emergency) |
 | Bad market contract registered | `MARKET_MANAGER_ROLE` guard + protocol governance |
 | Smart contract upgrade risk | UUPS + `UPGRADER_ROLE` + `_disableInitializers()` |
-| Emergency circuit breaker | `pause()` halts deposits, withdrawals, trades, transfers |
+| Emergency circuit breaker | `pause()` (PAUSER_ROLE) halts deposits, withdrawals, trades, transfers |
+| Compromised pauser defeats its own pause | `unpause()` requires DEFAULT_ADMIN_ROLE — asymmetric with `pause()` |
+| Admin key compromised silently | `AccessControlDefaultAdminRules` enforces two-step transfer + minimum delay for DEFAULT_ADMIN_ROLE |
 | Winners locked out during emergency pause | `claimWinnings` is NOT pause-gated — settled payouts are always claimable |
 | Settled market retains MARKET_ROLE indefinitely | Role automatically revoked when `claimedPayout == settledPayout` |
+| Market Prop 4.9 violation goes undetected | `LiabilityCapApplied` event fired when market reports `newLiability > riskBudget` |
 | Share inflation attack | 12-decimal ERC-4626 offset provides virtual protection |
 
 ### 8.3 CEI Pattern
@@ -439,7 +443,7 @@ The vault uses the **Universal Upgradeable Proxy Standard**:
 
 ### 9.2 Storage Safety Rules
 
-The storage layout must **never** be reordered or removed in upgrades. The `__gap` array reserves 43 future slots so new state variables can be appended without collision:
+The storage layout must **never** be reordered or removed in upgrades. The `__gap` array reserves 45 future slots so new state variables can be appended without collision:
 
 ```
 Custom storage layout (slots post-inheritance):
@@ -451,6 +455,8 @@ Custom storage layout (slots post-inheritance):
   slot 5:  markets (mapping — pointer, 1 slot)
   slots 6–50:  __gap[45]
 ```
+
+> **Note on inherited storage:** OZ 5.x uses ERC-7201 namespaced storage for all inherited modules (`AccessControlDefaultAdminRulesUpgradeable`, `ERC4626Upgradeable`, `ERC20PermitUpgradeable`, etc.). Inherited state does **not** occupy sequential slots in the implementation's storage — each module hashes its own deterministic slot. `ReentrancyGuard` in OZ 5.5+ uses transient storage (EIP-1153) and contributes no persistent storage at all.
 
 V2 upgrades may **append** variables before `__gap` and shrink `__gap` accordingly.
 
@@ -465,15 +471,21 @@ V2 upgrades may **append** variables before `__gap` and shrink `__gap` according
 | Single vault, not per-market | Capital efficiency, simplicity, single LP experience |
 | Live `totalLiability` tracks `currentLiability` sum | LP NAV reflects true position; improves with volume |
 | Single `reserveBps` capacity check | One parameter controls both the registration ceiling and the LP withdrawal floor simultaneously; no three-tier complexity |
-| `forceSettleMarket` emergency path | Oracle failures must be recoverable without permanent liability lockup |
+| `forceSettleMarket` emergency path (EMERGENCY_ROLE) | Oracle failures must be recoverable without permanent liability lockup; separate role enables faster-response multisig without needing full admin quorum |
 | `_assertSolvent()` at settlement (normal and emergency) | On-chain invariant assertion catches accounting bugs at the earliest possible moment; consistent across both paths |
+| `AccessControlDefaultAdminRules` for DEFAULT_ADMIN_ROLE | Two-step transfer with configurable minimum delay prevents silent admin key compromise; required for a vault holding user USDC |
+| Asymmetric pause/unpause privilege | `pause()` held by a fast ops multisig (PAUSER_ROLE); `unpause()` requires DEFAULT_ADMIN_ROLE — a compromised pauser key cannot defeat its own pause |
+| `EMERGENCY_ROLE` for `forceSettleMarket` | Emergency actions should not require full governance quorum; a purpose-built emergency multisig can act faster with lower coordination cost |
+| `utilizationBps()` measured against activeCap | Measuring against total assets (including reserve) misleads operators about available headroom; activeCap gives the real deployable picture |
+| `LiabilityCapApplied` event on Prop 4.9 violation | Silent cap hides misbehaving market contracts; emitting an observable event lets monitors detect and investigate anomalies without reverting trades |
+| `AccountingInvariantViolated` explicit guard in `claimWinnings` | The `claimedPayout - settledPayout` subtraction is structurally sound but a misrouted upgrade could violate it silently; an explicit check surfaces it as a named error with full context |
 | No ERC20Burnable standalone `burn()` | ERC-4626 `redeem`/`withdraw` handles all legitimate burn scenarios; standalone burn adds confusion |
 | No ERC-3156 Flash Mint on bLP | No concrete V1 use case; bLP flash-mint can temporarily inflate `totalSupply` creating accounting edge cases |
 | UUPS upgradeability kept | Pre-launch code; critical bugs must be fixable. Immutability is earned after external audit, not assumed before it |
 | No idle yield in V1 (Compound/Moonwell) | Reduces attack surface; add in V2 with thorough audit |
 | Settlement and winner claims NOT pause-gated | Markets must always settle and winners must always be able to claim their verified payouts; blocking claims during a pause would strand funds indefinitely |
 | `deregisterMarket` only if no trades | Prevents stranding trader USDC without recourse |
-| MARKET_ROLE auto-revoked on all exit paths | Removes attack surface after a market is fully closed regardless of payout amount: zero-payout markets are revoked inside `settleMarket` (no valid claim can ever arrive); non-zero payout markets are revoked inside `claimWinnings` on the final claim; force-settled markets are revoked inside `forceSettleMarket` |
+| MARKET_ROLE auto-revoked on all exit paths | Removes attack surface after a market is fully closed regardless of payout amount: zero-payout markets are revoked inside `settleMarket`; non-zero payout markets are revoked inside `claimWinnings` on the final claim; force-settled markets are revoked inside `forceSettleMarket` |
 | `MarketFullyClaimed` event on full drain | Off-chain indexers and dashboards have a definitive signal that a market is closed |
 | `MarketExpiredUntraded` event on zero-trade settlement | Distinguishes genuine market profit from riskBudget release on dead markets; prevents misleading indexer accounting |
 
