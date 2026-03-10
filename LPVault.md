@@ -382,20 +382,25 @@ The non-zero decimals offset in ERC-4626 provides **virtual share protection**: 
 ```
 DEFAULT_ADMIN_ROLE  (two-step transfer via AccessControlDefaultAdminRules)
     ├── MARKET_MANAGER_ROLE  ──  register / deregister markets
+    │       └── administers MARKET_ROLE  (via _setRoleAdmin — on-chain getRoleAdmin is consistent)
     ├── PAUSER_ROLE          ──  pause vault (low-latency ops multisig in production)
     ├── UPGRADER_ROLE        ──  authorize UUPS upgrades
     ├── EMERGENCY_ROLE       ──  force-settle broken/stuck markets (faster-response multisig)
     ├── unpause()            ──  reserved to DEFAULT_ADMIN_ROLE only (asymmetric with pause)
     └── (can grant any role to any address)
 
-MARKET_ROLE (auto-granted per market by MARKET_MANAGER;
+MARKET_ROLE (auto-granted per market by MARKET_MANAGER via registerMarket;
              auto-revoked on forceSettleMarket or when all winnings are claimed)
     ├── collectTradeCost()       ← updates live totalLiability atomically per trade
     ├── settleMarket()
     └── claimWinnings()          ← role auto-revoked when claimedPayout == settledPayout
 ```
 
-The vault uses OpenZeppelin `AccessControlDefaultAdminRulesUpgradeable`, which enforces a two-step, minimum-delay process for transferring `DEFAULT_ADMIN_ROLE`. A compromised admin key cannot silently hand control to an attacker without a pending acceptance window. All five privileged roles are initially granted to the deployer-specified `admin` address. In production, each role should be held by a distinct multisig or timelock tuned to its required response speed.
+The vault uses OpenZeppelin `AccessControlDefaultAdminRulesUpgradeable`, which enforces a two-step, minimum-delay process for transferring `DEFAULT_ADMIN_ROLE`. A compromised admin key cannot silently hand control to an attacker without a pending acceptance window.
+
+The initializer explicitly calls `_setRoleAdmin(MARKET_ROLE, MARKET_MANAGER_ROLE)`. Without this, OZ defaults `getRoleAdmin(MARKET_ROLE)` to `DEFAULT_ADMIN_ROLE` for all roles, causing a split between the on-chain metadata and the actual intent: audit tools and external `grantRole` callers would see governance as the owner of MARKET_ROLE, when market managers are. The explicit `_setRoleAdmin` call makes the public role management paths, dashboards, and internal functions all consistent.
+
+All five privileged roles are initially granted to the deployer-specified `admin` address. In production, each role should be held by a distinct multisig or timelock tuned to its required response speed.
 
 ### 8.2 Defence-in-Depth
 
@@ -415,6 +420,7 @@ The vault uses OpenZeppelin `AccessControlDefaultAdminRulesUpgradeable`, which e
 | Emergency circuit breaker | `pause()` (PAUSER_ROLE) halts deposits, withdrawals, trades, transfers |
 | Compromised pauser defeats its own pause | `unpause()` requires DEFAULT_ADMIN_ROLE — asymmetric with `pause()` |
 | Admin key compromised silently | `AccessControlDefaultAdminRules` enforces two-step transfer + minimum delay for DEFAULT_ADMIN_ROLE |
+| Audit tools / dashboards show wrong MARKET_ROLE owner | `_setRoleAdmin(MARKET_ROLE, MARKET_MANAGER_ROLE)` in `initialize` makes `getRoleAdmin` consistent with operational intent; prevents hidden reverts in external `grantRole` callers |
 | Winners locked out during emergency pause | `claimWinnings` is NOT pause-gated — settled payouts are always claimable |
 | Settled market retains MARKET_ROLE indefinitely | Role automatically revoked when `claimedPayout == settledPayout` |
 | Market Prop 4.9 violation goes undetected | `LiabilityCapApplied` event fired when market reports `newLiability > riskBudget` |
@@ -479,6 +485,7 @@ V2 upgrades may **append** variables before `__gap` and shrink `__gap` according
 | `utilizationBps()` measured against activeCap | Measuring against total assets (including reserve) misleads operators about available headroom; activeCap gives the real deployable picture |
 | `LiabilityCapApplied` event on Prop 4.9 violation | Silent cap hides misbehaving market contracts; emitting an observable event lets monitors detect and investigate anomalies without reverting trades |
 | `AccountingInvariantViolated` explicit guard in `claimWinnings` | The `claimedPayout - settledPayout` subtraction is structurally sound but a misrouted upgrade could violate it silently; an explicit check surfaces it as a named error with full context |
+| `_setRoleAdmin(MARKET_ROLE, MARKET_MANAGER_ROLE)` in `initialize` | `registerMarket`/`deregisterMarket` use internal `_grantRole`/`_revokeRole` which bypass the admin check and work correctly regardless. Without `_setRoleAdmin`, `getRoleAdmin(MARKET_ROLE)` returns `DEFAULT_ADMIN_ROLE` — audit tools display the wrong owner and any external `grantRole(MARKET_ROLE, x)` call reverts unless made by DEFAULT_ADMIN_ROLE. The single line aligns on-chain metadata with actual operational intent |
 | No ERC20Burnable standalone `burn()` | ERC-4626 `redeem`/`withdraw` handles all legitimate burn scenarios; standalone burn adds confusion |
 | No ERC-3156 Flash Mint on bLP | No concrete V1 use case; bLP flash-mint can temporarily inflate `totalSupply` creating accounting edge cases |
 | UUPS upgradeability kept | Pre-launch code; critical bugs must be fixable. Immutability is earned after external audit, not assumed before it |

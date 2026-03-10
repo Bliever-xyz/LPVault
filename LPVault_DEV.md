@@ -147,6 +147,25 @@ bytes32 EMERGENCY_ROLE         = keccak256("EMERGENCY_ROLE")
 | EMERGENCY_ROLE | `admin` param | Force-settle broken/stuck markets (faster-response multisig in production) |
 | MARKET_ROLE | *auto-granted per market by registerMarket; auto-revoked by forceSettleMarket or when claimedPayout == settledPayout* | Call collectTradeCost/settleMarket/claimWinnings |
 
+**Role admin hierarchy (`getRoleAdmin`):**
+
+OZ `AccessControl` sets `DEFAULT_ADMIN_ROLE` as the implicit admin of every role unless overridden. The initializer explicitly overrides this for `MARKET_ROLE`:
+
+```solidity
+_setRoleAdmin(MARKET_ROLE, MARKET_MANAGER_ROLE);
+```
+
+| Role | getRoleAdmin(role) | Meaning |
+|---|---|---|
+| DEFAULT_ADMIN_ROLE | itself (OZ DefaultAdminRules special case) | Two-step transfer only |
+| MARKET_MANAGER_ROLE | DEFAULT_ADMIN_ROLE | Governance controls who can manage markets |
+| PAUSER_ROLE | DEFAULT_ADMIN_ROLE | Governance controls who can pause |
+| UPGRADER_ROLE | DEFAULT_ADMIN_ROLE | Governance controls who can upgrade |
+| EMERGENCY_ROLE | DEFAULT_ADMIN_ROLE | Governance controls who can emergency-settle |
+| MARKET_ROLE | **MARKET_MANAGER_ROLE** | Market managers control market role grants — consistent with registerMarket/deregisterMarket |
+
+Without this override, `getRoleAdmin(MARKET_ROLE)` would return `DEFAULT_ADMIN_ROLE`, causing audit tools (OpenZeppelin Defender, Tenderly, custom dashboards) to display the wrong owner. Any V2 contract using `grantRole(MARKET_ROLE, x)` directly would also revert unless called from `DEFAULT_ADMIN_ROLE`, creating a hidden footgun.
+
 **Function → Role requirement:**
 
 | Function | Required Role |
@@ -343,7 +362,7 @@ __Pausable_init()
 __AccessControlDefaultAdminRules_init(0, admin)   ← sets admin + enforces two-step transfer; minDelay=0 at launch
 ```
 
-**Side effects:** Grants all five privileged roles to `admin` (`DEFAULT_ADMIN_ROLE` via init; remaining four via `_grantRole`).
+**Side effects:** Grants all five privileged roles to `admin` (`DEFAULT_ADMIN_ROLE` via init; remaining four via `_grantRole`). Sets `getRoleAdmin(MARKET_ROLE) = MARKET_MANAGER_ROLE` via `_setRoleAdmin` so on-chain role metadata and the public `grantRole`/`revokeRole` paths are consistent with the operational intent of `registerMarket`/`deregisterMarket`.
 
 > **Note:** `__ReentrancyGuard_init()` and `__UUPSUpgradeable_init()` are **not** called. In OZ 5.x, `ReentrancyGuard` uses transient storage and is stateless; `UUPSUpgradeable` holds no state of its own. Neither requires an init call.
 
@@ -1006,3 +1025,11 @@ Adding 2 new state variables requires changing `uint256[45] private __gap` to `u
 ### 13. `forceSettleMarket` requires EMERGENCY_ROLE
 
 The emergency settlement path is guarded by `EMERGENCY_ROLE`, not `DEFAULT_ADMIN_ROLE`. In production these should be separate multisigs. If EMERGENCY_ROLE is not yet delegated to a separate key, DEFAULT_ADMIN_ROLE holds it by default (granted in `initialize`) and can still execute force-settlement.
+
+### 14. `_grantRole` (internal) vs `grantRole` (public) — different access requirements for MARKET_ROLE
+
+`registerMarket` and `deregisterMarket` use `_grantRole`/`_revokeRole` (the internal `_` variants). Internal variants bypass the `getRoleAdmin` check and always succeed — they are guarded only by the calling function's own modifier (`onlyRole(MARKET_MANAGER_ROLE)`). This is correct.
+
+The public `grantRole(MARKET_ROLE, x)` path uses a different check: `onlyRole(getRoleAdmin(MARKET_ROLE))`. Because the initializer explicitly calls `_setRoleAdmin(MARKET_ROLE, MARKET_MANAGER_ROLE)`, this returns `MARKET_MANAGER_ROLE`, making both paths consistent.
+
+Without `_setRoleAdmin`, `getRoleAdmin(MARKET_ROLE)` would return `DEFAULT_ADMIN_ROLE` (the OZ default for all roles). Any external contract or admin script calling `grantRole(MARKET_ROLE, newMarket)` directly would revert unless the caller held `DEFAULT_ADMIN_ROLE`, creating an invisible discrepancy between on-chain role metadata and actual operational intent.
