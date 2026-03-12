@@ -32,14 +32,14 @@ BlieverV1Pool_InvariantTest  (StdInvariant, Test)
 
 ### Ghost Variables
 
-The handler maintains two **ghost variables** that shadow the vault's expected on-chain state:
+The handler maintains two **ghost variables** that shadow the vault's expected on-chain state as a second, independent accounting path:
 
 | Ghost Variable | Mirrors | Updated by |
 |---|---|---|
 | `ghost_expectedTotalLiability` | `pool.totalLiability()` | register, deregister, collectTrade, settle, forceSettle |
 | `ghost_activeMarketCount` | `pool.activeMarketCount()` | register, deregister, settle, forceSettle |
 
-Ghost variables are compared to on-chain values in the invariants. Any divergence indicates a missed update path.
+Ghost variables are asserted against on-chain state in Invariants 2 and 3 (see below). Having two independent accounting paths catches delta-update bugs that the on-chain cross-check alone cannot catch — for example, a bug where the vault and the on-chain iteration both apply the same incorrect delta, so they agree with each other but diverge from the ghost's correctly-maintained value.
 
 ### Handler Bounds
 
@@ -52,6 +52,10 @@ All handler inputs are bounded to keep calls within valid business-logic ranges:
 | `collectTrade` | newLiability as 0–100% fraction of riskBudget; cost 0–2K USDC |
 | `settleMarket` | payout as 0–100% fraction of riskBudget |
 | All index-based | Bounded to `allMarkets.length - 1` |
+
+### Zero-Cost Trade Handling
+
+In `collectTrade`, the USDC mint and approve are inside a `if (cost > 0)` guard, but the `doCollectTrade` call and ghost update are **outside** it. This means zero-cost trades — which the vault fully supports (lines 529–531 — liability changes without USDC movement) — are exercised by the invariant suite. Placing both inside the guard would silently skip this coverage.
 
 ---
 
@@ -73,11 +77,14 @@ usdc.balanceOf(pool) >= pool.totalLiability()
 
 ```
 pool.totalLiability() == Σ currentLiability_i  (all active markets)
+pool.totalLiability() == ghost_expectedTotalLiability
 ```
 
 **What it catches:** Delta-update bugs in `collectTradeCost`, missed liability releases in `settleMarket`/`forceSettleMarket`, or off-by-one errors in multi-market scenarios.
 
-The handler computes the on-chain sum directly via `computeOnChainLiabilitySum()` by iterating all tracked markets and reading `currentLiability` from the vault's `markets` mapping.
+Two independent checks run in parallel:
+- **On-chain cross-check:** `computeOnChainLiabilitySum()` iterates all tracked markets and reads `currentLiability` from the vault's mapping.
+- **Ghost cross-check:** The vault value is compared against the handler's separately-maintained delta counter. This catches cases where both the vault and the on-chain iteration have the same bug (e.g. both apply the same incorrect delta path) and would agree with each other while both diverging from the ghost.
 
 **Checked by:** `invariant_totalLiabilityEqualsSum()`
 
@@ -87,9 +94,10 @@ The handler computes the on-chain sum directly via `computeOnChainLiabilitySum()
 
 ```
 pool.activeMarketCount() == count of {market : registered && !settled}
+pool.activeMarketCount() == ghost_activeMarketCount
 ```
 
-**What it catches:** Any path that increments or decrements `activeMarketCount` incorrectly. Includes the underflow revert guard (decrement is intentionally checked, not unchecked).
+**What it catches:** Any path that increments or decrements `activeMarketCount` incorrectly. The ghost counter provides a second independent verification path for the same reasons as Invariant 2.
 
 **Checked by:** `invariant_activeMarketCountConsistent()`
 
@@ -160,15 +168,16 @@ For deeper local testing, increase `runs` to `1000` and `depth` to `256`.
 
 1. Add a new `invariant_<description>()` function to `BlieverV1Pool_InvariantTest`.
 2. If the invariant needs to iterate markets, use `handler.allMarketsLength()` and `handler.allMarkets(i)`.
-3. If the invariant needs a new ghost variable, add it to `PoolHandler` and update it in every relevant handler function.
+3. If the invariant needs a new ghost variable, add it to `PoolHandler`, update it in every relevant handler function, and assert it in the invariant alongside the on-chain cross-check.
 
 ### Adding a New Handler Function
 
 When a new vault function is added (e.g. a fee-collection path):
 
 1. Add a handler function in `PoolHandler` that calls the vault with bounded inputs.
-2. Update any relevant ghost variables synchronously.
+2. Update any relevant ghost variables synchronously inside the `try` block.
 3. Verify the `fail_on_revert = false` setting so expected reverts (invalid state transitions) do not abort the fuzzing sequence.
+4. If the function can change `totalLiability` or `activeMarketCount`, ensure both the ghost update and the guard logic (`if (!info.registered || info.settled) return;`) are consistent.
 
 ### Adding New Markets / LPs
 
@@ -181,5 +190,5 @@ The handler currently uses a soft cap of 4 active markets and 2 LP addresses to 
 | Limitation | Notes |
 |---|---|
 | Markets tracked by handler only | Markets registered outside the handler (e.g. by unit tests) are not tracked. Invariant tests are fully isolated from unit tests via separate `setUp`. |
-| Ghost variable precision | Ghost variables use `try/catch` around vault calls — if a call reverts, no ghost update occurs. This can cause divergence if the handler skips a valid update. The on-chain cross-check (`computeOnChainLiabilitySum`) catches this. |
+| Ghost variable precision | Ghost variables use `try/catch` around vault calls — if a call reverts, no ghost update occurs. Both sides skip together, so the ghost stays in sync. The on-chain cross-check (`computeOnChainLiabilitySum`) provides an additional independent verification path. |
 | No `ExceedsMaxMarkets` path | Registering 10 000 markets is impractical in an invariant test. The `activeMarketCount >= MAX_ACTIVE_MARKETS` revert path is not exercised here. |
