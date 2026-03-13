@@ -46,9 +46,33 @@ test/mocks/MockMarket.sol  — relays collectTradeCost / settleMarket / claimWin
 
 ### Section 1 — Initialization (`BlieverV1Pool_InitTest`)
 
-Tests the `initialize()` function: parameter storage, role grants, ERC-20 metadata, double-init protection, and all revert paths.
+Tests the `initialize()` function: parameter storage, role grants, ERC-20 metadata, double-init protection, bare-implementation protection, and all 7 input-validation revert paths.
 
-**`test_initialize_reverts_onBareImplementation`:** `_disableInitializers()` in the constructor blocks the logic contract itself from being initialised — only the proxy should be. This test calls `initialize` directly on a freshly-deployed `BlieverV1Pool` instance (no proxy) and verifies `InvalidInitialization()` fires.
+The validation guards in `initialize()` are identical to those in the corresponding setters (`setAlpha`, `setMaxRiskPerMarket`, `setReserveBps`) — same error types, same bounds. Every parameter that can later be changed via a setter is validated at construction time with the same rule.
+
+**Input validation test pattern — `_deployUninitProxy()`**
+
+The 7 input-validation tests use a two-step pattern: deploy an uninitialized proxy first, then call `initialize` with bad params as a direct external call.
+
+`_deployUninitProxy()` deploys a fresh `ERC1967Proxy` with **empty calldata** (`""`). When `data.length == 0`, `ERC1967Utils.upgradeToAndCall` skips the delegatecall path entirely and only sets the implementation slot — the proxy's `Initializable` storage stays at version 0, leaving it ready for a first-time `initialize` call in the test body.
+
+Why not `new ERC1967Proxy(impl, badInitData)` directly? Foundry's `vm.expectRevert` intercepts the innermost external call in a call frame, which inside the `ERC1967Proxy` constructor is the DELEGATECALL to `initialize`. Foundry marks the expectation as fulfilled at that level, swallows the delegatecall revert, and allows the proxy constructor to complete. The outer CREATE never reverts, so the test reports "next call did not revert as expected". Separating deployment from initialization means `vm.expectRevert` intercepts a plain external CALL, which is the opcode it was designed for.
+
+**Cheatcode ordering: prank + expectRevert**
+
+Three distinct prank-ordering hazards apply across this suite:
+
+1. **Role constant evaluated while prank is queued.** `pool.MARKET_ROLE()` is a staticcall. If `vm.prank(attacker)` is set first and `pool.MARKET_ROLE()` is evaluated as an argument (e.g., inside `_accessDenied`), the staticcall consumes the single-call prank. The subsequent target function runs from the test contract's address. Fix: evaluate all role constants before setting any prank.
+
+2. **`vm.startPrank` active when `vm.expectRevert` is called.** In some Foundry versions, calling `vm.expectRevert` while `vm.startPrank` is already active causes the framework to consume the prank context during cheatcode processing. The next real external call then runs from the test contract. Fix: use `vm.expectRevert` first (no prank active), then `vm.prank` as a single-call prank consumed only by the function under test.
+
+3. **`vm.prank` consumed by a staticcall used in `grantRole`.** Caching role constants into named variables before calling `vm.prank` avoids this. See `test_unpause_reverts_byPauserOnly` where `bytes32 pauserRole = pool.PAUSER_ROLE()` is cached before `vm.prank(admin); pool.grantRole(pauserRole, pauserOnly)`.
+
+The universal safe pattern across this suite: evaluate all contract getter calls, then `vm.expectRevert(...)`, then `vm.prank(addr)`, then the target function call.
+
+**Deposit and withdraw pause behavior**
+
+The contract pauses deposits and withdrawals via the ERC-4626 max-override pattern: `maxDeposit()` returns 0 and `maxWithdraw()` returns 0 when paused. The ERC-4626 base `deposit()` and `withdraw()` check these limits and throw `ERC4626ExceededMaxDeposit` / `ERC4626ExceededMaxWithdraw` — not `EnforcedPause()`. The `_update` hook (which carries `whenNotPaused`) blocks bLP token transfers directly via the EVM-level revert; USDC-level ERC-4626 operations go through the max-cap path. Tests in Section 9 assert the correct OZ error selectors for each path.
 
 | Test | What it verifies |
 |---|---|
@@ -58,10 +82,10 @@ Tests the `initialize()` function: parameter storage, role grants, ERC-20 metada
 | `test_initialize_setsERC20Metadata` | name / symbol / decimals / asset |
 | `test_initialize_reverts_doubleInit` | `InvalidInitialization()` on second proxy call |
 | `test_initialize_reverts_onBareImplementation` | `_disableInitializers()` in constructor blocks direct `initialize` on the logic contract |
-| `test_initialize_reverts_ZeroAddress_usdc/admin` | `ZeroAddress` error |
-| `test_initialize_reverts_InvalidAlpha_tooLow/High` | `InvalidAlpha` with bad value |
-| `test_initialize_reverts_InvalidMaxRisk_zero` | `InvalidMaxRisk` error |
-| `test_initialize_reverts_InvalidBps_tooLow/High` | `InvalidBps` error |
+| `test_initialize_reverts_ZeroAddress_usdc/admin` | `ZeroAddress` — via `_deployUninitProxy` + direct CALL pattern |
+| `test_initialize_reverts_InvalidAlpha_tooLow/High` | `InvalidAlpha` — via `_deployUninitProxy` + direct CALL pattern |
+| `test_initialize_reverts_InvalidMaxRisk_zero` | `InvalidMaxRisk` — via `_deployUninitProxy` + direct CALL pattern |
+| `test_initialize_reverts_InvalidBps_tooLow/High` | `InvalidBps` — via `_deployUninitProxy` + direct CALL pattern |
 
 ---
 
@@ -249,17 +273,23 @@ Tests asymmetric pause design:
 
 `settleMarket`, `forceSettleMarket`, and `claimWinnings` are verified as pause-exempt in sections 5, 6, and 7 respectively.
 
+**Pause enforcement mechanism — two distinct patterns:**
+
+Functions with an explicit `whenNotPaused` modifier (`registerMarket`, `deregisterMarket`, `collectTradeCost`, `transfer`) revert with `EnforcedPause()` directly.
+
+`deposit` and `withdraw` are paused via the ERC-4626 max-override pattern: `maxDeposit()` and `maxWithdraw()` return 0 when paused. The ERC-4626 base implementations check these limits before executing and revert with `ERC4626ExceededMaxDeposit(owner, assets, max)` and `ERC4626ExceededMaxWithdraw(owner, assets, max)` respectively — not with `EnforcedPause()`. Tests assert the correct typed selector with exact arguments derived from `pool.maxDeposit`/`pool.maxWithdraw`.
+
 | Test | What it verifies |
 |---|---|
 | `test_pause_succeeds_byPauser` | `pause()` works with PAUSER_ROLE |
 | `test_unpause_succeeds_byAdmin` | `unpause()` works with DEFAULT_ADMIN_ROLE |
-| `test_unpause_reverts_byPauserOnly` | PAUSER_ROLE cannot unpause — asymmetry enforced |
+| `test_unpause_reverts_byPauserOnly` | PAUSER_ROLE cannot unpause — asymmetry enforced. Uses `vm.expectRevert` then `vm.prank(pauserOnly)` (not `startPrank`). In some Foundry versions, calling `vm.expectRevert` while `vm.startPrank` is already active causes the framework to consume the prank context during cheatcode processing, so `pool.unpause()` runs from the test contract rather than `pauserOnly`. Correct ordering: `vm.expectRevert` first (no prank active), then `vm.prank` queued as a single-call prank consumed only by `pool.unpause()` |
 | `test_pause_reverts_byNonPauser` | Non-pauser blocked |
-| `test_pause_blocksDeposit` | Deposit reverts with `EnforcedPause()` |
-| `test_pause_blocksWithdraw` | `maxWithdraw == 0`; withdraw reverts |
-| `test_pause_blocksRegisterMarket` | Registration reverts with `EnforcedPause()` |
-| `test_pause_blocksTokenTransfer` | bLP transfer blocked by `_update` override |
-| `test_pause_blocksCollectTrade` | `collectTradeCost` (`whenNotPaused` line 500) reverts with `EnforcedPause()` |
+| `test_pause_blocksDeposit` | `ERC4626ExceededMaxDeposit(lp2, 1000e6, 0)` — max-override path |
+| `test_pause_blocksWithdraw` | `ERC4626ExceededMaxWithdraw(lp, 1000e6, 0)` — max-override path |
+| `test_pause_blocksRegisterMarket` | `EnforcedPause()` — explicit modifier |
+| `test_pause_blocksTokenTransfer` | bLP transfer blocked via `_update` override |
+| `test_pause_blocksCollectTrade` | `EnforcedPause()` — explicit `whenNotPaused` on `collectTradeCost` |
 | `test_pause_maxDeposit_returns0` | `maxDeposit` returns 0 when paused |
 | `test_pause_maxMint_returns0` | `maxMint` returns 0 when paused |
 | `test_pause_maxWithdraw_returns0` | `maxWithdraw` returns 0 when paused |
@@ -368,6 +398,25 @@ forge snapshot --match-path "test/BlieverV1Pool.t.sol"
 ---
 
 ## Extending These Tests
+
+**`vm.prank` ordering rule — required for all access-control revert tests:**
+
+`vm.prank(caller)` applies to the very next external call, including `staticcall` (view functions). When `pool.ROLE()` is evaluated as an argument to `vm.expectRevert(...)` while a prank is active, that staticcall consumes the prank. The function under test then executes from the test contract, not `caller`, producing the wrong address in the `AccessControlUnauthorizedAccount` error.
+
+Always use this order:
+```solidity
+// Correct: role() resolved before prank is set
+vm.expectRevert(_accessDenied(attacker, pool.SOME_ROLE()));
+vm.prank(attacker);
+pool.guardedFunction();
+```
+
+When a role value is needed as an argument to a function (not just to `vm.expectRevert`), cache it before setting the prank:
+```solidity
+bytes32 role = pool.SOME_ROLE();   // resolve while no prank is active
+vm.prank(admin);
+pool.grantRole(role, recipient);   // safe — no staticcall in args
+```
 
 - **New admin parameter:** Add a `test_set<Param>_*` block in `BlieverV1Pool_AdminParamsTest` following the existing pattern (happy path, boundary min/max, tooLow, tooHigh, unauthorized, isolation from existing markets).
 - **New market exit path:** Add coverage in `BlieverV1Pool_SettleMarketTest` and verify `MARKET_ROLE` revocation. Identify whether zero or non-zero payout is needed to keep the role alive for the revert-path test.
