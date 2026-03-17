@@ -145,7 +145,7 @@ bytes32 EMERGENCY_ROLE         = keccak256("EMERGENCY_ROLE")
 | PAUSER_ROLE | `admin` param | Pause vault (low-latency ops multisig in production) |
 | UPGRADER_ROLE | `admin` param | Authorize UUPS upgrades |
 | EMERGENCY_ROLE | `admin` param | Force-settle broken/stuck markets (faster-response multisig in production) |
-| MARKET_ROLE | *auto-granted per market by registerMarket; auto-revoked by forceSettleMarket or when claimedPayout == settledPayout* | Call collectTradeCost/settleMarket/claimWinnings |
+| MARKET_ROLE | *auto-granted per market by registerMarket; auto-revoked by forceSettleMarket or when claimedPayout == settledPayout* | Call collectTradeCost / distributeRefund / settleMarket / claimWinnings |
 
 **Role admin hierarchy (`getRoleAdmin`):**
 
@@ -173,6 +173,7 @@ Without this override, `getRoleAdmin(MARKET_ROLE)` would return `DEFAULT_ADMIN_R
 | `registerMarket` | MARKET_MANAGER_ROLE |
 | `deregisterMarket` | MARKET_MANAGER_ROLE |
 | `collectTradeCost` | MARKET_ROLE (msg.sender = market contract) |
+| `distributeRefund` | MARKET_ROLE (msg.sender = market contract) |
 | `settleMarket` | MARKET_ROLE (msg.sender = market contract) |
 | `forceSettleMarket` | EMERGENCY_ROLE |
 | `claimWinnings` | MARKET_ROLE (msg.sender = market contract) |
@@ -283,13 +284,19 @@ event MarketSettled(address indexed market, uint256 totalPayout, uint256 profit)
 ```solidity
 event TradeCostCollected(address indexed market, address indexed trader, uint256 cost, uint256 newCurrentLiability);
 ```
-Emitted every trade. `newCurrentLiability` is the updated worst-case loss for that market.
+Emitted on every buy trade. `newCurrentLiability` is the updated worst-case loss for that market after the buy.
+
+### `RefundDistributed`
+```solidity
+event RefundDistributed(address indexed market, address indexed trader, uint256 refundAmount, uint256 newCurrentLiability);
+```
+Emitted on every sell trade inside `distributeRefund`. `refundAmount` is the USDC sent from the vault to the trader. `newCurrentLiability` is the updated worst-case loss after the sell. Index `(market, trader)` to reconstruct a complete per-trader trade history across both buy and sell directions.
 
 ### `MarketLiabilityUpdated`
 ```solidity
 event MarketLiabilityUpdated(address indexed market, uint256 oldLiability, uint256 newLiability);
 ```
-Emitted from `collectTradeCost` when the market's `currentLiability` changes. Off-chain indexers should listen to this to track `totalLiability` decomposed per market.
+Emitted from both `collectTradeCost` and `distributeRefund` when the market's `currentLiability` changes. Off-chain indexers should listen to this to track `totalLiability` decomposed per market across both buy and sell activity.
 
 ### `MarketForceSettled`
 ```solidity
@@ -326,7 +333,7 @@ event ReserveBpsUpdated(uint16 oldBps, uint16 newBps);
 ```solidity
 event LiabilityCapApplied(address indexed market, uint256 reported, uint256 cap);
 ```
-Emitted from `collectTradeCost` when a market contract reports `newLiability > riskBudget`. This violates the LS-LMSR Proposition 4.9 invariant — the vault silently caps the value to `riskBudget` to maintain solvency, but fires this event so monitors and auditors can immediately identify the misbehaving market. Any occurrence of this event warrants investigation.
+Emitted from both `collectTradeCost` and `distributeRefund` when a market contract reports `newLiability > riskBudget`. This violates the LS-LMSR Proposition 4.9 invariant — the vault silently caps the value to `riskBudget` to maintain solvency, but fires this event so monitors and auditors can immediately identify the misbehaving market. Any occurrence of this event warrants investigation.
 
 ---
 
@@ -459,6 +466,58 @@ IERC20(asset()).safeTransferFrom(trader, address(this), cost)
 **Gas note:** If `cost == 0`, the USDC transfer is skipped. This handles zero-cost trades (e.g. marginal rebalances that round to zero).
 
 **Re-entrancy analysis:** All state changes (including `totalLiability` update) happen BEFORE `safeTransferFrom`. Even with ERC-777 hooks, vault state is committed. `nonReentrant` adds a second layer.
+
+---
+
+#### `distributeRefund`
+```solidity
+function distributeRefund(address trader, uint256 refundAmount, uint256 newLiability)
+    external onlyRole(MARKET_ROLE) nonReentrant whenNotPaused
+```
+
+**msg.sender is the market contract** (has MARKET_ROLE). The sell-side counterpart to `collectTradeCost`.
+
+**Pause-gated** — sell trades must stop when the vault is paused, consistent with `collectTradeCost`.
+
+**Pre-conditions:**
+1. `markets[msg.sender].registered == true`
+2. `markets[msg.sender].settled == false`
+3. `trader != address(0)`
+
+**State changes (before external call — CEI):**
+```
+capped = min(newLiability, info.riskBudget)
+
+// If cap fires, Prop 4.9 is violated — emit LiabilityCapApplied for monitoring
+if newLiability > info.riskBudget: emit LiabilityCapApplied(market, newLiability, riskBudget)
+
+old = info.currentLiability
+
+// Delta-update totalLiability (live LS-LMSR tracking — same logic as collectTradeCost)
+if capped > old:   totalLiability += (capped - old)
+elif capped < old: totalLiability -= (old - capped)
+
+info.currentLiability = capped
+info.hasTrades = true   ← defensive; confirms market has activity even on sell-only paths
+```
+
+**External call (after state changes):**
+```
+IERC20(asset()).safeTransfer(trader, refundAmount)   ← vault PUSHES; no trader approval needed
+```
+
+**Post-transfer solvency check:**
+```
+_assertSolvent()   ← balance must still cover totalLiability after USDC leaves the vault
+```
+
+**Gas note:** If `refundAmount == 0`, the USDC transfer is skipped. This handles zero-cost sell ops (e.g. marginal q-vector rebalances that round to zero).
+
+**Why `_assertSolvent()` here but not in `collectTradeCost`:** `collectTradeCost` pulls USDC *into* the vault — the balance can only increase. `distributeRefund` pushes USDC *out*, and a sell may simultaneously raise `currentLiability` (q-vector reverts toward q⁰ under certain skew conditions). Both effects reduce the solvency margin together. `_assertSolvent()` catches any misbehaving market that would leave the vault under-collateralised in a single call.
+
+**Re-entrancy analysis:** All state changes (including `totalLiability` and `currentLiability`) happen BEFORE `safeTransfer`. Even with ERC-777 hooks on a USDC-compatible token, vault state is fully committed. `nonReentrant` adds a second layer.
+
+**Trader approval:** The trader does **not** need a USDC approval for sell trades. The vault already holds the USDC and calls `safeTransfer` (not `safeTransferFrom`). This is the opposite of the buy path.
 
 ---
 
@@ -951,6 +1010,13 @@ function invariant_roleRevokedOnAllExitPaths(address[] calldata knownMarkets) ex
         }
     }
 }
+
+// Invariant 11: vault remains solvent immediately after every distributeRefund call
+// (distributeRefund calls _assertSolvent internally; this external check mirrors it)
+function invariant_solventAfterRefund() external {
+    // isSolvent() is the public mirror of _assertSolvent — always true if accounting is correct
+    assertTrue(vault.isSolvent());
+}
 ```
 
 ---
@@ -1033,3 +1099,18 @@ The emergency settlement path is guarded by `EMERGENCY_ROLE`, not `DEFAULT_ADMIN
 The public `grantRole(MARKET_ROLE, x)` path uses a different check: `onlyRole(getRoleAdmin(MARKET_ROLE))`. Because the initializer explicitly calls `_setRoleAdmin(MARKET_ROLE, MARKET_MANAGER_ROLE)`, this returns `MARKET_MANAGER_ROLE`, making both paths consistent.
 
 Without `_setRoleAdmin`, `getRoleAdmin(MARKET_ROLE)` would return `DEFAULT_ADMIN_ROLE` (the OZ default for all roles). Any external contract or admin script calling `grantRole(MARKET_ROLE, newMarket)` directly would revert unless the caller held `DEFAULT_ADMIN_ROLE`, creating an invisible discrepancy between on-chain role metadata and actual operational intent.
+
+### 15. `distributeRefund` — trader needs NO USDC approval; vault pushes, not pulls
+
+On a buy trade (`collectTradeCost`) the vault calls `safeTransferFrom(trader → vault, cost)`, so the trader must first approve the vault. On a sell trade (`distributeRefund`) the vault calls `safeTransfer(vault → trader, refundAmount)` — funds flow out of the vault. No ERC-20 approval from the trader is required or possible.
+
+```
+Buy:  trader.approve(vault, cost) then market calls vault.collectTradeCost(trader, cost, newLiab)
+Sell: no approval needed           then market calls vault.distributeRefund(trader, refund, newLiab)
+```
+
+Market contracts must not ask for trader approvals before calling `distributeRefund`.
+
+### 16. `distributeRefund` calls `_assertSolvent()` — `collectTradeCost` does not
+
+`collectTradeCost` always increases the vault balance (USDC flows in), so solvency is structurally preserved. `distributeRefund` decreases the balance (USDC flows out) while the liability update may go in either direction depending on market skew. The `_assertSolvent()` call at the end of `distributeRefund` is the on-chain safety net that prevents a misbehaving market from draining the vault below its total liability in a single call. If it reverts, an upstream accounting path in the market contract is broken and must be investigated immediately.
