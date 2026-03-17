@@ -108,7 +108,7 @@ BlieverV1Pool (single USDC vault — the only contract holding real USDC)
 ├── Market Contract #1  (NYC Mayor 2026)
 │   ├─ stores q-vector (synthetic accounting only)
 │   ├─ stores α, R (from vault at registration)
-│   └─ calls vault: collectTradeCost / settleMarket / claimWinnings
+│   └─ calls vault: collectTradeCost / distributeRefund / settleMarket / claimWinnings
 │
 ├── Market Contract #2  (US Presidential Election 2028)
 │   └─ (same structure)
@@ -145,6 +145,8 @@ LP receives USDC
 
 ### 4.2 Trade Flow
 
+#### Buy trade
+
 ```
 Trader wants to buy outcome-i shares in Market #1
 
@@ -161,11 +163,37 @@ Trader wants to buy outcome-i shares in Market #1
       a. Computes delta = newLiab − old currentLiability
       b. Applies delta to totalLiability  ← live liability tracking
       c. updates markets[market].currentLiability = min(newLiab, riskBudget)
-      d. safeTransferFrom(trader → vault, cost USDC)
-      e. emits TradeCostCollected + MarketLiabilityUpdated (if delta ≠ 0)
+      d. sets hasTrades = true
+      e. safeTransferFrom(trader → vault, cost USDC)
+      f. emits TradeCostCollected + MarketLiabilityUpdated (if delta ≠ 0)
 ```
 
-**Key insight:** As volume grows, `newLiab < old` on most trades → `totalLiability` shrinks → LP NAV rises. The vault becomes healthier with every trade, not just at settlement.
+#### Sell trade
+
+```
+Trader wants to sell outcome-i shares back to Market #1
+
+1. Market #1 computes:
+      refundAmount = C(q_old) − C(q_new)   [in USDC, 6-dec]
+      newLiab      = LSMath.calculateWorstCaseLoss(q_new, q0, α)
+
+2. Market #1 calls:
+      vault.distributeRefund(trader, refundAmount, newLiab)
+      (trader does NOT need a USDC approval — the vault pushes, not pulls)
+
+3. Vault (atomically in one call):
+      a. Computes delta = newLiab − old currentLiability
+      b. Applies delta to totalLiability  ← live liability tracking
+      c. updates markets[market].currentLiability = min(newLiab, riskBudget)
+      d. sets hasTrades = true (defensive — sell confirms market activity)
+      e. safeTransfer(vault → trader, refundAmount USDC)
+      f. emits RefundDistributed + MarketLiabilityUpdated (if delta ≠ 0)
+      g. calls _assertSolvent() — vault balance must still cover totalLiability
+```
+
+**Key insight — buy side:** As volume grows, `newLiab < old` on most trades → `totalLiability` shrinks → LP NAV rises. The vault becomes healthier with every trade, not just at settlement.
+
+**Key insight — sell side:** When a trader sells, the vault pushes USDC out. The q-vector partially reverts toward q⁰, which may raise or lower the worst-case loss bound depending on market skew. The `_assertSolvent()` check at the end of every `distributeRefund` call guarantees the balance never falls below total liabilities regardless of the liability direction.
 
 ### 4.3 Settlement Flow
 
@@ -220,9 +248,10 @@ Vault:
 |---|---|---|---|
 | LP deposits $1000 | +1000 | 0 | +1000 |
 | Market registered (R=$1) | 0 | +1 | −1 reserved |
-| Trade A: cost $0.10, liability $0.90 | +0.10 | −0.10 (live delta) | +0.20 |
-| Trade B: cost $0.05, liability $0.80 | +0.05 | −0.10 (live delta) | +0.15 |
-| Market settles, payout $0.70 | −0.70 | −0.80 released | profit absorbed |
+| Trade A (buy): cost $0.10, liability $0.90 | +0.10 | −0.10 (live delta) | +0.20 |
+| Trade B (buy): cost $0.05, liability $0.80 | +0.05 | −0.10 (live delta) | +0.15 |
+| Trade C (sell): refund $0.03, liability $0.85 | −0.03 | +0.05 (live delta) | −0.08 |
+| Market settles, payout $0.70 | −0.70 | −0.85 released | profit absorbed |
 
 `totalLiability` tracks the live loss bound, not the fixed riskBudget. Every trade that narrows the worst-case loss immediately improves LP NAV.
 
@@ -277,7 +306,7 @@ The vault enforces one hard invariant at all times:
 
 $$\text{rawBalance} \geq \text{totalLiability}$$
 
-`_assertSolvent()` is called at the end of `settleMarket` to verify this on-chain. `isSolvent()` is a public view function for off-chain monitoring. The invariant cannot be violated through normal operation paths — its purpose is to surface accounting bugs immediately rather than silently corrupting state.
+`_assertSolvent()` is called at the end of `settleMarket` and `distributeRefund` to verify this on-chain. `isSolvent()` is a public view function for off-chain monitoring. The invariant cannot be violated through normal operation paths — its purpose is to surface accounting bugs immediately rather than silently corrupting state.
 
 ### 5.4 Outcome-Independent Profit Region
 
@@ -353,8 +382,9 @@ The non-zero decimals offset in ERC-4626 provides **virtual share protection**: 
 │       │         ▼                                        │
 │       │    DEREGISTERED                                  │
 │       │                                                  │
-│  collectTradeCost(...)  [many times]                     │
-│  ── totalLiability updated live (delta per trade)        │
+│  collectTradeCost(...)  [buy trades — many times]                │
+│  distributeRefund(...)  [sell trades — many times]               │
+│  ── totalLiability updated live (delta per trade, both sides)    │
 │       │                                                  │
 │       │  settleMarket(totalPayout)                       │
 │       │  ── releases currentLiability from totalLiability│
@@ -391,7 +421,8 @@ DEFAULT_ADMIN_ROLE  (two-step transfer via AccessControlDefaultAdminRules)
 
 MARKET_ROLE (auto-granted per market by MARKET_MANAGER via registerMarket;
              auto-revoked on forceSettleMarket or when all winnings are claimed)
-    ├── collectTradeCost()       ← updates live totalLiability atomically per trade
+    ├── collectTradeCost()       ← buy trades: pulls USDC in, updates live totalLiability
+    ├── distributeRefund()       ← sell trades: pushes USDC out, updates live totalLiability, asserts solvency
     ├── settleMarket()
     └── claimWinnings()          ← role auto-revoked when claimedPayout == settledPayout
 ```
@@ -407,6 +438,8 @@ All five privileged roles are initially granted to the deployer-specified `admin
 | Threat | Mitigation |
 |---|---|
 | Re-entrancy in USDC transfer | `nonReentrant` on all state-changing external functions |
+| Trader sells shares but vault cannot send refund | `distributeRefund` (MARKET_ROLE) handles sell-side USDC push with full CEI and `_assertSolvent()` |
+| Sell drains vault below its liabilities | `_assertSolvent()` at end of every `distributeRefund` reverts if balance < totalLiability |
 | Trader can't withdraw locked USDC | `maxWithdraw`/`maxRedeem` enforce `_freeLiquidity` |
 | LP drains vault before market loss realises | Reserve buffer (`reserveBps`) anchored to total assets in both `_freeLiquidity` and `registerMarket` |
 | Vault over-commits to too many markets | Single capacity check: `newTotalLiab ≤ assets × (100% − reserveBps)` |
@@ -492,6 +525,8 @@ V2 upgrades may **append** variables before `__gap` and shrink `__gap` according
 | No idle yield in V1 (Compound/Moonwell) | Reduces attack surface; add in V2 with thorough audit |
 | Settlement and winner claims NOT pause-gated | Markets must always settle and winners must always be able to claim their verified payouts; blocking claims during a pause would strand funds indefinitely |
 | `deregisterMarket` only if no trades | Prevents stranding trader USDC without recourse |
+| Separate `collectTradeCost` (buy) and `distributeRefund` (sell) vault endpoints | Keeps buy/sell accounting explicit and independently auditable; sell path carries `_assertSolvent()` while buy path does not — the asymmetry is intentional because only sells reduce the vault balance |
+| `_assertSolvent()` called in `distributeRefund` | Sell trades push USDC out and may simultaneously raise `currentLiability`; both effects reduce the solvency margin together — post-interaction check catches any misbehaving market contract in a single call |
 | MARKET_ROLE auto-revoked on all exit paths | Removes attack surface after a market is fully closed regardless of payout amount: zero-payout markets are revoked inside `settleMarket`; non-zero payout markets are revoked inside `claimWinnings` on the final claim; force-settled markets are revoked inside `forceSettleMarket` |
 | `MarketFullyClaimed` event on full drain | Off-chain indexers and dashboards have a definitive signal that a market is closed |
 | `MarketExpiredUntraded` event on zero-trade settlement | Distinguishes genuine market profit from riskBudget release on dead markets; prevents misleading indexer accounting |
