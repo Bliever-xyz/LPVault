@@ -167,6 +167,44 @@ Tests `collectTradeCost()`: the primary vault interaction from market contracts.
 
 ---
 
+### Section 4B — Distribute Refund (`BlieverV1Pool_DistributeRefundTest`)
+
+Tests `distributeRefund()`: the vault's sell-side counterpart to `collectTradeCost()`.
+
+**Structural differences from `collectTradeCost` — all tested explicitly:**
+
+| Dimension | `collectTradeCost` | `distributeRefund` |
+|---|---|---|
+| USDC direction | trader → vault (`safeTransferFrom`) | vault → trader (`safeTransfer`) |
+| `hasTrades` | Set to `true` | Not touched |
+| Solvency check | Not called | `_assertSolvent()` at end |
+| Zero-amount guard | `if (cost > 0)` before transfer | `if (refundAmount > 0)` before transfer |
+
+**`test_distributeRefund_doesNotSetHasTrades`** is the most critical behavioural distinction. If `distributeRefund` ever set `hasTrades`, a sell-only market would be permanently blocked from deregistration — `deregisterMarket` guards on `hasTrades`. The test calls `distributeRefund`, then asserts `hasTrades == false` and confirms `deregisterMarket` completes without revert.
+
+**`test_distributeRefund_reverts_VaultInsolvent`** verifies `_assertSolvent()` fires on the outgoing-transfer path. `deal` drains the vault to exactly `MAX_RISK` (equal to `totalLiability`), then a 1-wei refund pushes the balance below liability.
+
+**`test_distributeRefund_reverts_MarketNotRegistered`** manually grants `MARKET_ROLE` to an unregistered contract to bypass `onlyRole` and reach the body-level guard — the only state where a caller has the role without being in the `markets` mapping.
+
+| Test | What it verifies |
+|---|---|
+| `test_distributeRefund_transfersUSDCToTrader` | Vault balance decremented; trader balance incremented by exact refund |
+| `test_distributeRefund_zeroRefund_noUSDCTransfer` | No USDC moves; liability update still applies |
+| `test_distributeRefund_decreasesLiability` | Normal sell: `totalLiability` falls when `newLiab < currentLiability` |
+| `test_distributeRefund_increasesLiability_whenBetweenOldAndBudget` | `capped > old` branch: liability re-expands within budget |
+| `test_distributeRefund_newLiabilityZero_dropsToZero` | Fully closed position drives `totalLiability` to zero |
+| `test_distributeRefund_capsLiabilityAtRiskBudget` | Overbudget report capped; `LiabilityCapApplied` emitted |
+| `test_distributeRefund_emitsRefundDistributed` | All 4 fields: market, trader, refundAmount, newCurrentLiability |
+| `test_distributeRefund_emitsMarketLiabilityUpdated_whenChanged` | Conditional event fires on any delta |
+| `test_distributeRefund_noLiabilityEvent_whenUnchanged` | No redundant event when liability is unchanged |
+| `test_distributeRefund_doesNotSetHasTrades` | `hasTrades` stays false; deregister succeeds after sell-only usage |
+| `test_distributeRefund_reverts_VaultInsolvent` | `_assertSolvent()` catches any outflow that breaks solvency |
+| `test_distributeRefund_reverts_MarketNotRegistered` | Manually granted role; body guard reachable |
+| `test_distributeRefund_reverts_MarketAlreadySettled` | Non-zero first settle keeps role; guard reached |
+| `test_distributeRefund_reverts_ZeroAddress_trader` | `ZeroAddress` input guard |
+| `test_distributeRefund_reverts_whenPaused` | `whenNotPaused` blocks sell path during pause |
+| `test_distributeRefund_reverts_unauthorized` | Non-`MARKET_ROLE` caller blocked |
+
 ### Section 5 — Settle Market (`BlieverV1Pool_SettleMarketTest`)
 
 Tests `settleMarket()`: the normal resolution path. Covers payout accounting, liability release, active count, and three event branches.
