@@ -427,10 +427,10 @@ forge test --match-contract "BlieverV1Pool_SettleMarketTest" -vvv
 forge test --match-contract "BlieverV1Pool_FuzzTest" -vvv
 
 # Coverage report
-forge coverage --match-path "test/BlieverV1Pool.t.sol" --report summary
+forge coverage --match-path "test/BlieverV1Pool*.t.sol" --report summary --ir-minimum
 
 # Gas snapshot for hot paths
-forge snapshot --match-path "test/BlieverV1Pool.t.sol"
+forge test --match-path "test/BlieverV1Pool*.t.sol" --gas-report
 ```
 
 ---
