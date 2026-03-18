@@ -28,6 +28,7 @@ BlieverV1Pool_InvariantTest  (StdInvariant, Test)
             ├── settleMarket()
             ├── forceSettle()
             └── claimWinnings()
+            ├── distributeRefund()
 ```
 
 ### Ghost Variables
@@ -192,3 +193,4 @@ The handler currently uses a soft cap of 4 active markets and 2 LP addresses to 
 | Markets tracked by handler only | Markets registered outside the handler (e.g. by unit tests) are not tracked. Invariant tests are fully isolated from unit tests via separate `setUp`. |
 | Ghost variable precision | Ghost variables use `try/catch` around vault calls — if a call reverts, no ghost update occurs. Both sides skip together, so the ghost stays in sync. The on-chain cross-check (`computeOnChainLiabilitySum`) provides an additional independent verification path. |
 | No `ExceedsMaxMarkets` path | Registering 10 000 markets is impractical in an invariant test. The `activeMarketCount >= MAX_ACTIVE_MARKETS` revert path is not exercised here. |
+| `VaultInsolvent` not exercised by invariant handler | `distributeRefund` refundAmount is bounded to vault surplus so the handler never triggers insolvency. The unit suite covers this path in `test_distributeRefund_reverts_VaultInsolvent`. |
