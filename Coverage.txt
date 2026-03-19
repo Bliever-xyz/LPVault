@@ -1,4 +1,4 @@
-# BlieverV1Pool — Test Coverage Report
+# BlieverV1Pool — Coverage Report
 
 ╭---------------------------------------+------------------+------------------+-----------------+----------------╮
 | File                                  | % Lines          | % Statements     | % Branches      | % Funcs        |
