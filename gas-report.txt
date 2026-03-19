@@ -1,0 +1,559 @@
+No files changed, compilation skipped
+
+Ran 17 tests for test/BlieverV1Pool.t.sol:BlieverV1Pool_AdminParamsTest
+[PASS] test_setAlpha_boundary_minAndMax() (gas: 142548)
+[PASS] test_setAlpha_emitsEvent() (gas: 47922)
+[PASS] test_setAlpha_reverts_tooHigh() (gas: 50201)
+[PASS] test_setAlpha_reverts_tooLow() (gas: 50684)
+[PASS] test_setAlpha_reverts_unauthorized() (gas: 53666)
+[PASS] test_setAlpha_updatesValue() (gas: 55232)
+[PASS] test_setMaxRiskPerMarket_doesNotAffectExistingMarkets() (gas: 991721)
+[PASS] test_setMaxRiskPerMarket_emitsEvent() (gas: 49208)
+[PASS] test_setMaxRiskPerMarket_reverts_unauthorized() (gas: 55172)
+[PASS] test_setMaxRiskPerMarket_reverts_zero() (gas: 41683)
+[PASS] test_setMaxRiskPerMarket_updatesValue() (gas: 56123)
+[PASS] test_setReserveBps_boundary_minAndMax() (gas: 105918)
+[PASS] test_setReserveBps_emitsEvent() (gas: 48399)
+[PASS] test_setReserveBps_reverts_tooHigh() (gas: 52935)
+[PASS] test_setReserveBps_reverts_tooLow() (gas: 51832)
+[PASS] test_setReserveBps_reverts_unauthorized() (gas: 54057)
+[PASS] test_setReserveBps_updatesValue() (gas: 54520)
+Suite result: ok. 17 passed; 0 failed; 0 skipped; finished in 4.61ms (2.37ms CPU time)
+
+Ran 9 tests for test/BlieverV1Pool.t.sol:BlieverV1Pool_ERC4626Test
+[PASS] test_decimals_returns18() (gas: 11031)
+[PASS] test_deposit_increasesTotalAssets() (gas: 208272)
+[PASS] test_deposit_mintsShares() (gas: 189496)
+[PASS] test_maxWithdraw_cappedByFreeLiquidity() (gas: 530856)
+[PASS] test_maxWithdraw_zeroWhenFullyUtilised() (gas: 3586191)
+[PASS] test_redeem_burnsSharesAndReturnsUSDC() (gas: 130581)
+[PASS] test_totalAssets_equalsRawUSDCBalance() (gas: 23149)
+[PASS] test_withdraw_burnsSharesAndReturnsUSDC() (gas: 117773)
+[PASS] test_withdraw_reverts_beyondFreeLiquidity() (gas: 569775)
+Suite result: ok. 9 passed; 0 failed; 0 skipped; finished in 4.98ms (2.65ms CPU time)
+
+Ran 16 tests for test/BlieverV1Pool.t.sol:BlieverV1Pool_DistributeRefundTest
+[PASS] test_distributeRefund_capsLiabilityAtRiskBudget() (gas: 590360)
+[PASS] test_distributeRefund_decreasesLiability() (gas: 594058)
+[PASS] test_distributeRefund_doesNotSetHasTrades() (gas: 662757)
+[PASS] test_distributeRefund_emitsMarketLiabilityUpdated_whenChanged() (gas: 568667)
+[PASS] test_distributeRefund_emitsRefundDistributed() (gas: 596918)
+[PASS] test_distributeRefund_increasesLiability_whenBetweenOldAndBudget() (gas: 671757)
+[PASS] test_distributeRefund_newLiabilityZero_dropsToZero() (gas: 574775)
+[PASS] test_distributeRefund_noLiabilityEvent_whenUnchanged() (gas: 561483)
+[PASS] test_distributeRefund_reverts_MarketAlreadySettled() (gas: 794186)
+[PASS] test_distributeRefund_reverts_MarketNotRegistered() (gas: 423824)
+[PASS] test_distributeRefund_reverts_VaultInsolvent() (gas: 797152)
+[PASS] test_distributeRefund_reverts_ZeroAddress_trader() (gas: 540391)
+[PASS] test_distributeRefund_reverts_unauthorized() (gas: 55793)
+[PASS] test_distributeRefund_reverts_whenPaused() (gas: 593680)
+[PASS] test_distributeRefund_transfersUSDCToTrader() (gas: 617636)
+[PASS] test_distributeRefund_zeroRefund_noUSDCTransfer() (gas: 594037)
+Suite result: ok. 16 passed; 0 failed; 0 skipped; finished in 6.97ms (5.38ms CPU time)
+
+Ran 16 tests for test/BlieverV1Pool.t.sol:BlieverV1Pool_ViewFunctionsTest
+[PASS] test_availableLiquidity_decreasesAfterRegister() (gas: 522185)
+[PASS] test_availableLiquidity_increasesAfterTrade() (gas: 722252)
+[PASS] test_availableLiquidity_noMarkets() (gas: 23721)
+[PASS] test_getMarketInfo_returnsFullStruct() (gas: 498279)
+[PASS] test_isActiveMarket_falseAfterSettle() (gas: 549488)
+[PASS] test_isActiveMarket_falseForUnregistered() (gas: 15903)
+[PASS] test_isActiveMarket_trueAfterRegister() (gas: 488768)
+[PASS] test_isSolvent_trueAlways() (gas: 496063)
+[PASS] test_nav_correct() (gas: 21594)
+[PASS] test_nav_decreasesAfterRegister() (gas: 497202)
+[PASS] test_nav_remainsPositive_whenFullyUtilised() (gas: 3552874)
+[PASS] test_nav_returnsZero_whenLiabilityExceedsAssets() (gas: 706515)
+[PASS] test_utilizationBps_correct_afterRegister() (gas: 499349)
+[PASS] test_utilizationBps_fullUtilization() (gas: 3554875)
+[PASS] test_utilizationBps_zeroWhenNoAssets() (gas: 4966288)
+[PASS] test_utilizationBps_zero_whenNoLiability() (gas: 23690)
+Suite result: ok. 16 passed; 0 failed; 0 skipped; finished in 7.34ms (5.23ms CPU time)
+
+Ran 12 tests for test/BlieverV1Pool.t.sol:BlieverV1Pool_ClaimWinningsTest
+[PASS] test_claimWinnings_afterForceSettle_reverts_unauthorized() (gas: 606367)
+[PASS] test_claimWinnings_emitsWinningsClaimed() (gas: 823689)
+[PASS] test_claimWinnings_lastClaim_emitsMarketFullyClaimed() (gas: 823201)
+[PASS] test_claimWinnings_lastClaim_revokesMarketRole() (gas: 863107)
+[PASS] test_claimWinnings_partialClaims_trackAccumulation() (gas: 926513)
+[PASS] test_claimWinnings_reverts_MarketNotSettled() (gas: 540070)
+[PASS] test_claimWinnings_reverts_PayoutExceedsSettlement() (gas: 868929)
+[PASS] test_claimWinnings_reverts_ZeroAddress_winner() (gas: 766328)
+[PASS] test_claimWinnings_reverts_ZeroAmount() (gas: 768603)
+[PASS] test_claimWinnings_reverts_unauthorized() (gas: 55485)
+[PASS] test_claimWinnings_transfersUSDCToWinner() (gas: 836182)
+[PASS] test_claimWinnings_worksWhileVaultIsPaused() (gas: 878166)
+Suite result: ok. 12 passed; 0 failed; 0 skipped; finished in 8.38ms (6.07ms CPU time)
+
+Ran 14 tests for test/BlieverV1Pool.t.sol:BlieverV1Pool_SettleMarketTest
+[PASS] test_assertSolvent_reverts_VaultInsolvent() (gas: 1225704)
+[PASS] test_settleMarket_decrementsActiveMarketCount() (gas: 564886)
+[PASS] test_settleMarket_emitsMarketSettled() (gas: 565219)
+[PASS] test_settleMarket_profitIncreasesLPShareValue() (gas: 775199)
+[PASS] test_settleMarket_releasesCurrentLiabilityFromTotal() (gas: 748420)
+[PASS] test_settleMarket_reverts_AlreadySettled() (gas: 767685)
+[PASS] test_settleMarket_reverts_PayoutExceedsRiskBudget() (gas: 541215)
+[PASS] test_settleMarket_reverts_unauthorized() (gas: 54573)
+[PASS] test_settleMarket_totalPayout_equalsRiskBudget_succeeds() (gas: 580090)
+[PASS] test_settleMarket_untraded_emitsMarketExpiredUntraded() (gas: 542398)
+[PASS] test_settleMarket_withPayout_setsSettledState() (gas: 744036)
+[PASS] test_settleMarket_worksWhileVaultIsPaused() (gas: 611807)
+[PASS] test_settleMarket_zeroPayout_emitsMarketFullyClaimed() (gas: 542706)
+[PASS] test_settleMarket_zeroPayout_revokesRoleImmediately() (gas: 582734)
+Suite result: ok. 14 passed; 0 failed; 0 skipped; finished in 8.76ms (6.39ms CPU time)
+
+Ran 11 tests for test/BlieverV1Pool.t.sol:BlieverV1Pool_DeregisterMarketTest
+[PASS] test_deregisterMarket_allowsReregistration_sameAddress() (gas: 769333)
+[PASS] test_deregisterMarket_decrementActiveCount() (gas: 550885)
+[PASS] test_deregisterMarket_emitsEvent() (gas: 525946)
+[PASS] test_deregisterMarket_releasesLiabilityFromTotal() (gas: 548875)
+[PASS] test_deregisterMarket_reverts_AlreadySettled() (gas: 576762)
+[PASS] test_deregisterMarket_reverts_MarketHasTrades() (gas: 647829)
+[PASS] test_deregisterMarket_reverts_NotRegistered() (gas: 326855)
+[PASS] test_deregisterMarket_reverts_unauthorized() (gas: 529497)
+[PASS] test_deregisterMarket_reverts_whenPaused() (gas: 567984)
+[PASS] test_deregisterMarket_revokesMarketRole() (gas: 567652)
+[PASS] test_deregisterMarket_succeeds() (gas: 541529)
+Suite result: ok. 11 passed; 0 failed; 0 skipped; finished in 5.63ms (3.53ms CPU time)
+
+Ran 8 tests for test/BlieverV1Pool.t.sol:BlieverV1Pool_ForceSettleTest
+[PASS] test_forceSettleMarket_emitsMarketForceSettled() (gas: 671830)
+[PASS] test_forceSettleMarket_releasesLiability() (gas: 694552)
+[PASS] test_forceSettleMarket_reverts_AlreadySettled() (gas: 580283)
+[PASS] test_forceSettleMarket_reverts_NotRegistered() (gas: 347391)
+[PASS] test_forceSettleMarket_reverts_unauthorized() (gas: 529770)
+[PASS] test_forceSettleMarket_revokesMarketRole() (gas: 583634)
+[PASS] test_forceSettleMarket_setsSettledState() (gas: 557601)
+[PASS] test_forceSettleMarket_worksWhileVaultIsPaused() (gas: 610676)
+Suite result: ok. 8 passed; 0 failed; 0 skipped; finished in 3.93ms (1.89ms CPU time)
+
+Ran 13 tests for test/BlieverV1Pool.t.sol:BlieverV1Pool_PauseTest
+[PASS] test_pause_blocksCollectTrade() (gas: 595255)
+[PASS] test_pause_blocksDeposit() (gas: 200534)
+[PASS] test_pause_blocksRegisterMarket() (gas: 377332)
+[PASS] test_pause_blocksTokenTransfer() (gas: 99024)
+[PASS] test_pause_blocksWithdraw() (gas: 116354)
+[PASS] test_pause_maxDeposit_returns0() (gas: 73745)
+[PASS] test_pause_maxMint_returns0() (gas: 74165)
+[PASS] test_pause_maxRedeem_returns0() (gas: 74875)
+[PASS] test_pause_maxWithdraw_returns0() (gas: 74589)
+[PASS] test_pause_reverts_byNonPauser() (gas: 54496)
+[PASS] test_pause_succeeds_byPauser() (gas: 71524)
+[PASS] test_unpause_reverts_byPauserOnly() (gas: 181052)
+[PASS] test_unpause_succeeds_byAdmin() (gas: 97867)
+Suite result: ok. 13 passed; 0 failed; 0 skipped; finished in 3.95ms (1.98ms CPU time)
+
+Ran 12 tests for test/BlieverV1Pool.t.sol:BlieverV1Pool_InitTest
+[PASS] test_initialize_grantsAllRolesToAdmin() (gas: 107580)
+[PASS] test_initialize_reverts_InvalidAlpha_tooHigh() (gas: 4480425)
+[PASS] test_initialize_reverts_InvalidAlpha_tooLow() (gas: 4480468)
+[PASS] test_initialize_reverts_InvalidBps_tooHigh() (gas: 4481983)
+[PASS] test_initialize_reverts_InvalidBps_tooLow() (gas: 4481388)
+[PASS] test_initialize_reverts_InvalidMaxRisk_zero() (gas: 4469976)
+[PASS] test_initialize_reverts_ZeroAddress_admin() (gas: 4467322)
+[PASS] test_initialize_reverts_ZeroAddress_usdc() (gas: 4467483)
+[PASS] test_initialize_reverts_doubleInit() (gas: 43931)
+[PASS] test_initialize_setsERC20Metadata() (gas: 53489)
+[PASS] test_initialize_setsMarketRoleAdminToMarketManager() (gas: 29880)
+[PASS] test_initialize_setsProtocolParams() (gas: 58261)
+Suite result: ok. 12 passed; 0 failed; 0 skipped; finished in 4.92ms (3.21ms CPU time)
+
+Ran 15 tests for test/BlieverV1Pool.t.sol:BlieverV1Pool_CollectTradeCostTest
+[PASS] test_collectTradeCost_capsLiabilityAtRiskBudget() (gas: 584861)
+[PASS] test_collectTradeCost_decreasesLiability_normalPath() (gas: 675021)
+[PASS] test_collectTradeCost_emitsMarketLiabilityUpdated_whenChanged() (gas: 564882)
+[PASS] test_collectTradeCost_emitsTradeCostCollected() (gas: 670250)
+[PASS] test_collectTradeCost_increasesLiability_whenBetweenOldAndBudget() (gas: 662284)
+[PASS] test_collectTradeCost_newLiabilityZero_totalLiabilityDropsToZero() (gas: 586351)
+[PASS] test_collectTradeCost_noLiabilityEvent_whenSameLiability() (gas: 555714)
+[PASS] test_collectTradeCost_reverts_MarketAlreadySettled() (gas: 795078)
+[PASS] test_collectTradeCost_reverts_ZeroAddress_trader() (gas: 541522)
+[PASS] test_collectTradeCost_reverts_unauthorized_nonMarketRole() (gas: 56963)
+[PASS] test_collectTradeCost_reverts_whenPaused() (gas: 595229)
+[PASS] test_collectTradeCost_setsHasTrades() (gas: 628443)
+[PASS] test_collectTradeCost_updatesTotalLiabilityCorrectly() (gas: 876171)
+[PASS] test_collectTradeCost_withCost_transfersUSDC() (gas: 678070)
+[PASS] test_collectTradeCost_zeroCost_noUSDCTransfer() (gas: 626808)
+Suite result: ok. 15 passed; 0 failed; 0 skipped; finished in 8.24ms (6.12ms CPU time)
+
+Ran 3 tests for test/BlieverV1Pool.t.sol:BlieverV1Pool_UpgradeTest
+[PASS] test_upgrade_preservesState() (gas: 4988417)
+[PASS] test_upgrade_reverts_unauthorized() (gas: 4469908)
+[PASS] test_upgrade_succeeds_byUpgrader() (gas: 4464252)
+Suite result: ok. 3 passed; 0 failed; 0 skipped; finished in 3.66ms (2.11ms CPU time)
+
+Ran 15 tests for test/BlieverV1Pool.t.sol:BlieverV1Pool_RegisterMarketTest
+[PASS] test_registerMarket_emitsEvent() (gas: 482368)
+[PASS] test_registerMarket_grantsMarketRole() (gas: 497845)
+[PASS] test_registerMarket_incrementsActiveCount() (gas: 943772)
+[PASS] test_registerMarket_maxOutcomes_100_succeeds() (gas: 497726)
+[PASS] test_registerMarket_reverts_CapacityExceeded_noDeposits() (gas: 5289826)
+[PASS] test_registerMarket_reverts_CapacityExceeded_nthMarketExceedsCap() (gas: 3871436)
+[PASS] test_registerMarket_reverts_InvalidOutcomeCount_101() (gas: 326567)
+[PASS] test_registerMarket_reverts_InvalidOutcomeCount_one() (gas: 326720)
+[PASS] test_registerMarket_reverts_MarketAlreadyRegistered() (gas: 518272)
+[PASS] test_registerMarket_reverts_NotAContract_EOA() (gas: 47966)
+[PASS] test_registerMarket_reverts_ZeroAddress() (gas: 42509)
+[PASS] test_registerMarket_reverts_unauthorized() (gas: 334637)
+[PASS] test_registerMarket_reverts_whenPaused() (gas: 377148)
+[PASS] test_registerMarket_succeeds() (gas: 499070)
+[PASS] test_registerMarket_updatesTotalLiability() (gas: 953954)
+Suite result: ok. 15 passed; 0 failed; 0 skipped; finished in 5.81ms (4.91ms CPU time)
+
+Ran 5 tests for test/BlieverV1Pool_Invariants.t.sol:BlieverV1Pool_InvariantTest
+[PASS] invariant_activeMarketCountConsistent() (runs: 256, calls: 32768, reverts: 0)
+
+╭-------------+-------------------+-------+---------+----------╮
+| Contract    | Selector          | Calls | Reverts | Discards |
++==============================================================+
+| PoolHandler | claimWinnings     | 3581  | 0       | 0        |
+|-------------+-------------------+-------+---------+----------|
+| PoolHandler | collectTrade      | 3615  | 0       | 0        |
+|-------------+-------------------+-------+---------+----------|
+| PoolHandler | depositLiquidity  | 3658  | 0       | 0        |
+|-------------+-------------------+-------+---------+----------|
+| PoolHandler | deregisterMarket  | 3676  | 0       | 0        |
+|-------------+-------------------+-------+---------+----------|
+| PoolHandler | distributeRefund  | 3559  | 0       | 0        |
+|-------------+-------------------+-------+---------+----------|
+| PoolHandler | forceSettle       | 3550  | 0       | 0        |
+|-------------+-------------------+-------+---------+----------|
+| PoolHandler | registerMarket    | 3605  | 0       | 0        |
+|-------------+-------------------+-------+---------+----------|
+| PoolHandler | settleMarket      | 3755  | 0       | 0        |
+|-------------+-------------------+-------+---------+----------|
+| PoolHandler | withdrawLiquidity | 3769  | 0       | 0        |
+╰-------------+-------------------+-------+---------+----------╯
+
+[PASS] invariant_currentLiabilityBounded() (runs: 256, calls: 32768, reverts: 0)
+
+╭-------------+-------------------+-------+---------+----------╮
+| Contract    | Selector          | Calls | Reverts | Discards |
++==============================================================+
+| PoolHandler | claimWinnings     | 3581  | 0       | 0        |
+|-------------+-------------------+-------+---------+----------|
+| PoolHandler | collectTrade      | 3615  | 0       | 0        |
+|-------------+-------------------+-------+---------+----------|
+| PoolHandler | depositLiquidity  | 3658  | 0       | 0        |
+|-------------+-------------------+-------+---------+----------|
+| PoolHandler | deregisterMarket  | 3676  | 0       | 0        |
+|-------------+-------------------+-------+---------+----------|
+| PoolHandler | distributeRefund  | 3559  | 0       | 0        |
+|-------------+-------------------+-------+---------+----------|
+| PoolHandler | forceSettle       | 3550  | 0       | 0        |
+|-------------+-------------------+-------+---------+----------|
+| PoolHandler | registerMarket    | 3605  | 0       | 0        |
+|-------------+-------------------+-------+---------+----------|
+| PoolHandler | settleMarket      | 3755  | 0       | 0        |
+|-------------+-------------------+-------+---------+----------|
+| PoolHandler | withdrawLiquidity | 3769  | 0       | 0        |
+╰-------------+-------------------+-------+---------+----------╯
+
+[PASS] invariant_payoutBounds() (runs: 256, calls: 32768, reverts: 0)
+
+╭-------------+-------------------+-------+---------+----------╮
+| Contract    | Selector          | Calls | Reverts | Discards |
++==============================================================+
+| PoolHandler | claimWinnings     | 3581  | 0       | 0        |
+|-------------+-------------------+-------+---------+----------|
+| PoolHandler | collectTrade      | 3615  | 0       | 0        |
+|-------------+-------------------+-------+---------+----------|
+| PoolHandler | depositLiquidity  | 3658  | 0       | 0        |
+|-------------+-------------------+-------+---------+----------|
+| PoolHandler | deregisterMarket  | 3676  | 0       | 0        |
+|-------------+-------------------+-------+---------+----------|
+| PoolHandler | distributeRefund  | 3559  | 0       | 0        |
+|-------------+-------------------+-------+---------+----------|
+| PoolHandler | forceSettle       | 3550  | 0       | 0        |
+|-------------+-------------------+-------+---------+----------|
+| PoolHandler | registerMarket    | 3605  | 0       | 0        |
+|-------------+-------------------+-------+---------+----------|
+| PoolHandler | settleMarket      | 3755  | 0       | 0        |
+|-------------+-------------------+-------+---------+----------|
+| PoolHandler | withdrawLiquidity | 3769  | 0       | 0        |
+╰-------------+-------------------+-------+---------+----------╯
+
+[PASS] invariant_solvency() (runs: 256, calls: 32768, reverts: 0)
+
+╭-------------+-------------------+-------+---------+----------╮
+| Contract    | Selector          | Calls | Reverts | Discards |
++==============================================================+
+| PoolHandler | claimWinnings     | 3581  | 0       | 0        |
+|-------------+-------------------+-------+---------+----------|
+| PoolHandler | collectTrade      | 3615  | 0       | 0        |
+|-------------+-------------------+-------+---------+----------|
+| PoolHandler | depositLiquidity  | 3658  | 0       | 0        |
+|-------------+-------------------+-------+---------+----------|
+| PoolHandler | deregisterMarket  | 3676  | 0       | 0        |
+|-------------+-------------------+-------+---------+----------|
+| PoolHandler | distributeRefund  | 3559  | 0       | 0        |
+|-------------+-------------------+-------+---------+----------|
+| PoolHandler | forceSettle       | 3550  | 0       | 0        |
+|-------------+-------------------+-------+---------+----------|
+| PoolHandler | registerMarket    | 3605  | 0       | 0        |
+|-------------+-------------------+-------+---------+----------|
+| PoolHandler | settleMarket      | 3755  | 0       | 0        |
+|-------------+-------------------+-------+---------+----------|
+| PoolHandler | withdrawLiquidity | 3769  | 0       | 0        |
+╰-------------+-------------------+-------+---------+----------╯
+
+[PASS] invariant_totalLiabilityEqualsSum() (runs: 256, calls: 32768, reverts: 0)
+
+╭-------------+-------------------+-------+---------+----------╮
+| Contract    | Selector          | Calls | Reverts | Discards |
++==============================================================+
+| PoolHandler | claimWinnings     | 3581  | 0       | 0        |
+|-------------+-------------------+-------+---------+----------|
+| PoolHandler | collectTrade      | 3615  | 0       | 0        |
+|-------------+-------------------+-------+---------+----------|
+| PoolHandler | depositLiquidity  | 3658  | 0       | 0        |
+|-------------+-------------------+-------+---------+----------|
+| PoolHandler | deregisterMarket  | 3676  | 0       | 0        |
+|-------------+-------------------+-------+---------+----------|
+| PoolHandler | distributeRefund  | 3559  | 0       | 0        |
+|-------------+-------------------+-------+---------+----------|
+| PoolHandler | forceSettle       | 3550  | 0       | 0        |
+|-------------+-------------------+-------+---------+----------|
+| PoolHandler | registerMarket    | 3605  | 0       | 0        |
+|-------------+-------------------+-------+---------+----------|
+| PoolHandler | settleMarket      | 3755  | 0       | 0        |
+|-------------+-------------------+-------+---------+----------|
+| PoolHandler | withdrawLiquidity | 3769  | 0       | 0        |
+╰-------------+-------------------+-------+---------+----------╯
+
+Suite result: ok. 5 passed; 0 failed; 0 skipped; finished in 13.24s (52.13s CPU time)
+
+Ran 7 tests for test/BlieverV1Pool.t.sol:BlieverV1Pool_FuzzTest
+[PASS] testFuzz_collectTradeCost_capNeverExceedsRiskBudget(uint256) (runs: 1000, μ: 572385, ~: 572399)
+[PASS] testFuzz_collectTradeCost_liabilityTrackedCorrectly(uint256,uint256) (runs: 1000, μ: 695929, ~: 697879)
+[PASS] testFuzz_deposit_sharesAlwaysGtZero(uint256) (runs: 1000, μ: 180966, ~: 181011)
+[PASS] testFuzz_freeLiquidity_neverNegative(uint256,uint256) (runs: 1000, μ: 1016547, ~: 1134194)
+[PASS] testFuzz_setAlpha_boundsEnforced(uint256) (runs: 1000, μ: 57391, ~: 59228)
+[PASS] testFuzz_setReserveBps_boundsEnforced(uint16) (runs: 1000, μ: 63675, ~: 61373)
+[PASS] testFuzz_settleMarket_profitNonNegative(uint256) (runs: 1000, μ: 760681, ~: 761995)
+Suite result: ok. 7 passed; 0 failed; 0 skipped; finished in 13.38s (15.07s CPU time)
+
+╭-------------------------------------------------------------------------------------------+-----------------+-------+--------+--------+---------╮
+| lib/openzeppelin-contracts/contracts/proxy/ERC1967/ERC1967Proxy.sol:ERC1967Proxy Contract |                 |       |        |        |         |
++=================================================================================================================================================+
+| Deployment Cost                                                                           | Deployment Size |       |        |        |         |
+|-------------------------------------------------------------------------------------------+-----------------+-------+--------+--------+---------|
+| 500345                                                                                    | 962             |       |        |        |         |
+|-------------------------------------------------------------------------------------------+-----------------+-------+--------+--------+---------|
+|                                                                                           |                 |       |        |        |         |
+|-------------------------------------------------------------------------------------------+-----------------+-------+--------+--------+---------|
+| Function Name                                                                             | Min             | Avg   | Median | Max    | # Calls |
+|-------------------------------------------------------------------------------------------+-----------------+-------+--------+--------+---------|
+| fallback                                                                                  | 3581            | 42614 | 16480  | 188680 | 187521  |
+|-------------------------------------------------------------------------------------------+-----------------+-------+--------+--------+---------|
+| registerMarket                                                                            | 52730           | 52730 | 52730  | 52730  | 1       |
+|-------------------------------------------------------------------------------------------+-----------------+-------+--------+--------+---------|
+| utilizationBps                                                                            | 13755           | 13755 | 13755  | 13755  | 1       |
+╰-------------------------------------------------------------------------------------------+-----------------+-------+--------+--------+---------╯
+
+╭----------------------------------------------+-----------------+--------+--------+--------+---------╮
+| src/BlieverV1Pool.sol:BlieverV1Pool Contract |                 |        |        |        |         |
++=====================================================================================================+
+| Deployment Cost                              | Deployment Size |        |        |        |         |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| 4376495                                      | 20035           |        |        |        |         |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+|                                              |                 |        |        |        |         |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| Function Name                                | Min             | Avg    | Median | Max    | # Calls |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| DEFAULT_ADMIN_ROLE                           | 1376            | 1376   | 1376   | 1376   | 5       |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| EMERGENCY_ROLE                               | 475             | 475    | 475    | 475    | 2       |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| MARKET_MANAGER_ROLE                          | 724             | 724    | 724    | 724    | 4       |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| MARKET_ROLE                                  | 768             | 768    | 768    | 768    | 19      |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| MAX_ALPHA                                    | 453             | 453    | 453    | 453    | 136     |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| MAX_RESERVE_BPS                              | 1839            | 1839   | 1839   | 1839   | 259     |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| MIN_ALPHA                                    | 717             | 717    | 717    | 717    | 260     |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| MIN_RESERVE_BPS                              | 1069            | 1069   | 1069   | 1069   | 259     |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| PAUSER_ROLE                                  | 1971            | 1971   | 1971   | 1971   | 3       |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| UPGRADER_ROLE                                | 2015            | 2015   | 2015   | 2015   | 2       |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| activeMarketCount                            | 3568            | 3568   | 3568   | 3568   | 11      |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| alpha                                        | 4007            | 4007   | 4007   | 4007   | 41      |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| asset                                        | 2829            | 2829   | 2829   | 2829   | 1       |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| availableLiquidity                           | 13191           | 13244  | 13245  | 13245  | 262     |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| balanceOf                                    | 3285            | 3285   | 3285   | 3285   | 3       |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| claimWinnings                                | 2763            | 69511  | 61132  | 78232  | 2246    |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| collectTradeCost                             | 3991            | 56912  | 55734  | 89897  | 4987    |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| convertToAssets                              | 10457           | 10457  | 10457  | 10457  | 2       |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| decimals                                     | 563             | 563    | 563    | 563    | 2       |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| deposit                                      | 3285            | 42407  | 39059  | 93490  | 19039   |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| deregisterMarket                             | 4074            | 44593  | 44667  | 44667  | 3297    |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| distributeRefund                             | 2734            | 53522  | 47247  | 98510  | 4181    |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| forceSettleMarket                            | 4313            | 54720  | 53766  | 70866  | 4219    |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| getMarketInfo                                | 11640           | 11640  | 11640  | 11640  | 101934  |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| getRoleAdmin                                 | 2737            | 2737   | 2737   | 2737   | 1       |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| grantRole                                    | 29753           | 29753  | 29753  | 29753  | 2       |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| hasRole                                      | 3584            | 3584   | 3584   | 3584   | 17      |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| initialize                                   | 4151            | 366527 | 381394 | 381394 | 183     |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| isActiveMarket                               | 3271            | 3294   | 3306   | 3306   | 15      |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| isSolvent                                    | 10576           | 10576  | 10576  | 10576  | 257     |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| maxDeposit                                   | 3054            | 3054   | 3054   | 3054   | 1       |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| maxMint                                      | 3868            | 3868   | 3868   | 3868   | 1       |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| maxRedeem                                    | 4118            | 4118   | 4118   | 4118   | 1       |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| maxRiskPerMarket                             | 3524            | 3524   | 3524   | 3524   | 2       |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| maxWithdraw                                  | 3942            | 22105  | 22107  | 22111  | 18925   |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| name                                         | 2864            | 2864   | 2864   | 2864   | 1       |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| nav                                          | 11311           | 11344  | 11356  | 11356  | 4       |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| pause                                        | 3296            | 25477  | 26645  | 26645  | 20      |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| paused                                       | 3015            | 3015   | 3015   | 3015   | 2       |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| proxiableUUID                                | 917             | 917    | 917    | 917    | 2       |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| redeem                                       | 62654           | 62654  | 62654  | 62654  | 1       |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| registerMarket                               | 2945            | 139613 | 128098 | 162298 | 16891   |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| reserveBps                                   | 2760            | 2760   | 2760   | 2760   | 38      |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| setAlpha                                     | 2547            | 3568   | 2611   | 8896   | 263     |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| setMaxRiskPerMarket                          | 4175            | 7961   | 10480  | 10480  | 5       |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| setReserveBps                                | 3414            | 4413   | 3455   | 9783   | 263     |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| settleMarket                                 | 4139            | 65212  | 64796  | 81896  | 4692    |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| symbol                                       | 3920            | 3920   | 3920   | 3920   | 1       |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| totalAssets                                  | 7731            | 7731   | 7731   | 7731   | 260     |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| totalLiability                               | 2468            | 2468   | 2468   | 2468   | 4707    |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| transfer                                     | 3741            | 3741   | 3741   | 3741   | 1       |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| unpause                                      | 2980            | 6031   | 6031   | 9083   | 2       |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| upgradeToAndCall                             | 3651            | 9108   | 11837  | 11837  | 3       |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| utilizationBps                               | 8948            | 12400  | 13551  | 13551  | 4       |
+|----------------------------------------------+-----------------+--------+--------+--------+---------|
+| withdraw                                     | 3896            | 45584  | 45587  | 62691  | 16070   |
+╰----------------------------------------------+-----------------+--------+--------+--------+---------╯
+
+╭----------------------------------------------------------+-----------------+--------+--------+--------+---------╮
+| test/BlieverV1Pool_Invariants.t.sol:PoolHandler Contract |                 |        |        |        |         |
++=================================================================================================================+
+| Deployment Cost                                          | Deployment Size |        |        |        |         |
+|----------------------------------------------------------+-----------------+--------+--------+--------+---------|
+| 2017122                                                  | 9102            |        |        |        |         |
+|----------------------------------------------------------+-----------------+--------+--------+--------+---------|
+|                                                          |                 |        |        |        |         |
+|----------------------------------------------------------+-----------------+--------+--------+--------+---------|
+| Function Name                                            | Min             | Avg    | Median | Max    | # Calls |
+|----------------------------------------------------------+-----------------+--------+--------+--------+---------|
+| allMarkets                                               | 4737            | 4737   | 4737   | 4737   | 26      |
+|----------------------------------------------------------+-----------------+--------+--------+--------+---------|
+| allMarketsLength                                         | 2495            | 2495   | 2495   | 2495   | 2       |
+|----------------------------------------------------------+-----------------+--------+--------+--------+---------|
+| claimWinnings                                            | 2460            | 37187  | 27203  | 130518 | 17960   |
+|----------------------------------------------------------+-----------------+--------+--------+--------+---------|
+| collectTrade                                             | 2640            | 66840  | 27438  | 256177 | 18170   |
+|----------------------------------------------------------+-----------------+--------+--------+--------+---------|
+| computeOnChainActiveCount                                | 88942           | 88942  | 88942  | 88942  | 1       |
+|----------------------------------------------------------+-----------------+--------+--------+--------+---------|
+| computeOnChainLiabilitySum                               | 210333          | 210333 | 210333 | 210333 | 1       |
+|----------------------------------------------------------+-----------------+--------+--------+--------+---------|
+| depositLiquidity                                         | 81441           | 86751  | 83963  | 120859 | 18355   |
+|----------------------------------------------------------+-----------------+--------+--------+--------+---------|
+| deregisterMarket                                         | 2442            | 39062  | 27251  | 104323 | 18455   |
+|----------------------------------------------------------+-----------------+--------+--------+--------+---------|
+| distributeRefund                                         | 2478            | 50468  | 27278  | 196548 | 17845   |
+|----------------------------------------------------------+-----------------+--------+--------+--------+---------|
+| forceSettle                                              | 2601            | 45760  | 27390  | 130410 | 17810   |
+|----------------------------------------------------------+-----------------+--------+--------+--------+---------|
+| ghost_activeMarketCount                                  | 2473            | 2473   | 2473   | 2473   | 1       |
+|----------------------------------------------------------+-----------------+--------+--------+--------+---------|
+| ghost_expectedTotalLiability                             | 2583            | 2583   | 2583   | 2583   | 1       |
+|----------------------------------------------------------+-----------------+--------+--------+--------+---------|
+| registerMarket                                           | 2280            | 433495 | 483266 | 568766 | 18120   |
+|----------------------------------------------------------+-----------------+--------+--------+--------+---------|
+| settleMarket                                             | 2673            | 48460  | 27471  | 147218 | 18845   |
+|----------------------------------------------------------+-----------------+--------+--------+--------+---------|
+| withdrawLiquidity                                        | 32133           | 103153 | 115198 | 115495 | 18920   |
+╰----------------------------------------------------------+-----------------+--------+--------+--------+---------╯
+
+╭-----------------------------------------------+-----------------+-------+--------+--------+---------╮
+| test/mocks/MockMarket.sol:MockMarket Contract |                 |       |        |        |         |
++=====================================================================================================+
+| Deployment Cost                               | Deployment Size |       |        |        |         |
+|-----------------------------------------------+-----------------+-------+--------+--------+---------|
+| 248292                                        | 1089            |       |        |        |         |
+|-----------------------------------------------+-----------------+-------+--------+--------+---------|
+|                                               |                 |       |        |        |         |
+|-----------------------------------------------+-----------------+-------+--------+--------+---------|
+| Function Name                                 | Min             | Avg   | Median | Max    | # Calls |
+|-----------------------------------------------+-----------------+-------+--------+--------+---------|
+| doClaim                                       | 32304           | 91598 | 83170  | 100270 | 2245    |
+|-----------------------------------------------+-----------------+-------+--------+--------+---------|
+| doCollectTrade                                | 43135           | 78431 | 77943  | 112142 | 4986    |
+|-----------------------------------------------+-----------------+-------+--------+--------+---------|
+| doDistributeRefund                            | 41960           | 80718 | 74385  | 125612 | 4180    |
+|-----------------------------------------------+-----------------+-------+--------+--------+---------|
+| doSettle                                      | 40472           | 83601 | 86353  | 106265 | 4691    |
+╰-----------------------------------------------+-----------------+-------+--------+--------+---------╯
+
+╭-------------------------------------------+-----------------+-------+--------+-------+---------╮
+| test/mocks/MockUSDC.sol:MockUSDC Contract |                 |       |        |       |         |
++================================================================================================+
+| Deployment Cost                           | Deployment Size |       |        |       |         |
+|-------------------------------------------+-----------------+-------+--------+-------+---------|
+| 477263                                    | 2488            |       |        |       |         |
+|-------------------------------------------+-----------------+-------+--------+-------+---------|
+|                                           |                 |       |        |       |         |
+|-------------------------------------------+-----------------+-------+--------+-------+---------|
+| Function Name                             | Min             | Avg   | Median | Max   | # Calls |
+|-------------------------------------------+-----------------+-------+--------+-------+---------|
+| approve                                   | 25985           | 45889 | 45933  | 45957 | 5328    |
+|-------------------------------------------+-----------------+-------+--------+-------+---------|
+| balanceOf                                 | 537             | 1840  | 2537   | 2537  | 158399  |
+|-------------------------------------------+-----------------+-------+--------+-------+---------|
+| decimals                                  | 241             | 241   | 241    | 241   | 175     |
+|-------------------------------------------+-----------------+-------+--------+-------+---------|
+| mint                                      | 28225           | 41646 | 33873  | 68085 | 5543    |
+╰-------------------------------------------+-----------------+-------+--------+-------+---------╯
+
+
+Ran 15 test suites in 15.84s (26.70s CPU time): 173 tests passed, 0 failed, 0 skipped (173 total tests)
